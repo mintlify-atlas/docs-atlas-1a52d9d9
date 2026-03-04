@@ -1,0 +1,518 @@
+---
+title: PostgreSQL
+description: PostgreSQL-specific features and usage in Ironclad
+---
+
+## Overview
+
+Ironclad uses PostgreSQL as its primary database, leveraging SQLx for compile-time verified queries and async connection pooling. The framework is built on the robust foundation of `sqlx` version 0.7 with PostgreSQL-specific features enabled.
+
+## Dependencies
+
+From `Cargo.toml`:
+
+```toml
+[dependencies]
+# Database - PostgreSQL
+sqlx = { version = "0.7", features = [
+    "runtime-tokio-rustls",
+    "runtime-tokio-native-tls",
+    "postgres",
+    "chrono"
+]}
+```
+
+Features:
+- `runtime-tokio-rustls`: Async runtime with Rustls for TLS
+- `runtime-tokio-native-tls`: Async runtime with native TLS
+- `postgres`: PostgreSQL driver support
+- `chrono`: DateTime type support
+
+## Connection Setup
+
+The PostgreSQL connection pool is initialized in `src/db/postgres.rs`:
+
+```rust
+use sqlx::postgres::PgPoolOptions;
+use sqlx::PgPool;
+use std::time::Duration; 
+use crate::config::PostgresConfig;
+use crate::errors::ApiError;
+
+/// Initialize PostgreSQL connection pool
+pub async fn init_pool(config: &PostgresConfig) -> Result<PgPool, ApiError> {
+    PgPoolOptions::new()
+        .max_connections(config.max_connections)
+        // THREADSAFE: Ensure database can handle minimum connections
+        .min_connections(config.min_connections) 
+        // THREADSAFE: Balance between load handling and resource exhaustion
+        .acquire_timeout(Duration::from_secs(config.acquire_timeout))
+        // THREADSAFE: Balance connection lifecycle and error detection
+        .idle_timeout(Duration::from_secs(config.idle_timeout))
+        .connect(&config.postgres_url)
+        .await
+        .map_err(|e| ApiError::DatabaseError(e.to_string()))
+}
+```
+
+## Configuration
+
+PostgreSQL configuration is managed through environment variables:
+
+```bash
+# PostgreSQL Database
+DATABASE_URL=postgresql://postgres:password@localhost:5432/template_db
+DB_MAX_CONNECTIONS=5
+DB_MIN_CONNECTIONS=1
+DB_ACQUIRE_TIMEOUT=5
+DB_IDLE_TIMEOUT=300
+```
+
+### Configuration Struct
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostgresConfig {
+    pub postgres_url: String,      // Connection URL
+    pub max_connections: u32,      // Maximum pool size
+    pub min_connections: u32,      // Minimum idle connections
+    pub acquire_timeout: u64,      // Connection acquire timeout (seconds)
+    pub idle_timeout: u64,         // Idle connection timeout (seconds)
+}
+```
+
+## Query Patterns
+
+### Basic Query
+
+```rust
+use sqlx::PgPool;
+
+pub async fn get_user_count(pool: &PgPool) -> Result<i64, sqlx::Error> {
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM users")
+        .fetch_one(pool)
+        .await?;
+    Ok(count.0)
+}
+```
+
+### Query with Parameters
+
+```rust
+use sqlx::PgPool;
+
+#[derive(sqlx::FromRow)]
+pub struct User {
+    pub id: String,
+    pub email: String,
+    pub username: String,
+    pub is_active: bool,
+}
+
+pub async fn find_user_by_email(
+    pool: &PgPool,
+    email: &str,
+) -> Result<Option<User>, sqlx::Error> {
+    sqlx::query_as::<_, User>(
+        "SELECT id, email, username, is_active 
+         FROM users 
+         WHERE email = $1"
+    )
+    .bind(email)
+    .fetch_optional(pool)
+    .await
+}
+```
+
+### Insert with Returning
+
+```rust
+use chrono::{DateTime, Utc};
+use uuid::Uuid;
+
+pub async fn create_user(
+    pool: &PgPool,
+    email: &str,
+    username: &str,
+    password_hash: &str,
+) -> Result<User, sqlx::Error> {
+    let id = Uuid::new_v4().to_string();
+    let now = Utc::now();
+    
+    sqlx::query_as::<_, User>(
+        "INSERT INTO users (id, email, username, password_hash, is_active, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING id, email, username, is_active"
+    )
+    .bind(&id)
+    .bind(email)
+    .bind(username)
+    .bind(password_hash)
+    .bind(true)
+    .bind(now)
+    .bind(now)
+    .fetch_one(pool)
+    .await
+}
+```
+
+### Update
+
+```rust
+pub async fn update_user_role(
+    pool: &PgPool,
+    user_id: &str,
+    role: &str,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(
+        "UPDATE users SET role = $1, updated_at = $2 WHERE id = $3"
+    )
+    .bind(role)
+    .bind(Utc::now())
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    
+    Ok(result.rows_affected())
+}
+```
+
+### Delete
+
+```rust
+pub async fn delete_user(
+    pool: &PgPool,
+    user_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    
+    Ok(result.rows_affected() > 0)
+}
+```
+
+### Transaction
+
+```rust
+use sqlx::{PgPool, Postgres, Transaction};
+
+pub async fn transfer_ownership(
+    pool: &PgPool,
+    from_user_id: &str,
+    to_user_id: &str,
+    item_id: &str,
+) -> Result<(), sqlx::Error> {
+    let mut tx: Transaction<Postgres> = pool.begin().await?;
+    
+    // Update item ownership
+    sqlx::query("UPDATE test_items SET user_id = $1 WHERE id = $2")
+        .bind(to_user_id)
+        .bind(item_id)
+        .execute(&mut *tx)
+        .await?;
+    
+    // Log the transfer
+    sqlx::query(
+        "INSERT INTO ownership_logs (from_user, to_user, item_id, transferred_at) 
+         VALUES ($1, $2, $3, $4)"
+    )
+    .bind(from_user_id)
+    .bind(to_user_id)
+    .bind(item_id)
+    .bind(Utc::now())
+    .execute(&mut *tx)
+    .await?;
+    
+    // Commit transaction
+    tx.commit().await?;
+    Ok(())
+}
+```
+
+## PostgreSQL-Specific Features
+
+### Array Types
+
+```rust
+pub async fn find_users_by_roles(
+    pool: &PgPool,
+    roles: &[String],
+) -> Result<Vec<User>, sqlx::Error> {
+    sqlx::query_as::<_, User>(
+        "SELECT id, email, username, is_active 
+         FROM users 
+         WHERE role = ANY($1)"
+    )
+    .bind(roles)
+    .fetch_all(pool)
+    .await
+}
+```
+
+### JSONB Support
+
+```rust
+use serde_json::Value;
+
+pub async fn store_user_metadata(
+    pool: &PgPool,
+    user_id: &str,
+    metadata: &Value,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE users SET metadata = $1 WHERE id = $2"
+    )
+    .bind(metadata)
+    .bind(user_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+```
+
+### Full-Text Search
+
+```sql
+-- Create search index (in migration)
+ALTER TABLE test_items ADD COLUMN search_vector tsvector;
+CREATE INDEX idx_test_items_search ON test_items USING GIN(search_vector);
+```
+
+```rust
+pub async fn search_items(
+    pool: &PgPool,
+    search_query: &str,
+) -> Result<Vec<TestItem>, sqlx::Error> {
+    sqlx::query_as::<_, TestItem>(
+        "SELECT * FROM test_items 
+         WHERE search_vector @@ plainto_tsquery('english', $1) 
+         ORDER BY ts_rank(search_vector, plainto_tsquery('english', $1)) DESC"
+    )
+    .bind(search_query)
+    .fetch_all(pool)
+    .await
+}
+```
+
+### LISTEN/NOTIFY
+
+```rust
+use sqlx::postgres::PgListener;
+
+pub async fn listen_for_notifications(database_url: &str) -> Result<(), sqlx::Error> {
+    let mut listener = PgListener::connect(database_url).await?;
+    listener.listen("user_changes").await?;
+    
+    loop {
+        let notification = listener.recv().await?;
+        println!("Received notification: {}", notification.payload());
+    }
+}
+
+pub async fn notify_user_change(
+    pool: &PgPool,
+    user_id: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT pg_notify('user_changes', $1)")
+        .bind(user_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+```
+
+## Type Mappings
+
+Common Rust-to-PostgreSQL type mappings:
+
+| Rust Type | PostgreSQL Type | Notes |
+|-----------|----------------|-------|
+| `String` | `VARCHAR`, `TEXT` | For string data |
+| `i32` | `INTEGER` | 32-bit integer |
+| `i64` | `BIGINT` | 64-bit integer |
+| `f64` | `DOUBLE PRECISION` | Floating point |
+| `bool` | `BOOLEAN` | True/false |
+| `chrono::DateTime<Utc>` | `TIMESTAMP WITH TIME ZONE` | Timestamps |
+| `chrono::NaiveDateTime` | `TIMESTAMP` | Without timezone |
+| `uuid::Uuid` | `UUID` | UUID type |
+| `serde_json::Value` | `JSON`, `JSONB` | JSON data |
+| `Vec<T>` | `ARRAY` | PostgreSQL arrays |
+| `Option<T>` | `NULL` | Nullable columns |
+
+## Connection Pooling
+
+### Pool Configuration Best Practices
+
+```rust
+PgPoolOptions::new()
+    // Set based on your workload and database capacity
+    .max_connections(20)
+    
+    // Keep a few connections warm for fast response
+    .min_connections(5)
+    
+    // Don't wait forever for a connection
+    .acquire_timeout(Duration::from_secs(5))
+    
+    // Close idle connections to free resources
+    .idle_timeout(Duration::from_secs(300))
+    
+    // Maximum lifetime of a connection (helps with load balancing)
+    .max_lifetime(Duration::from_secs(3600))
+    
+    // Test connections before use
+    .test_before_acquire(true)
+    
+    .connect(&database_url)
+    .await?;
+```
+
+### Monitoring Pool Health
+
+```rust
+pub fn log_pool_stats(pool: &PgPool) {
+    println!("Pool connections: {}", pool.size());
+    println!("Idle connections: {}", pool.num_idle());
+}
+```
+
+## Error Handling
+
+```rust
+use sqlx::Error as SqlxError;
+use crate::errors::ApiError;
+
+pub async fn safe_get_user(
+    pool: &PgPool,
+    user_id: &str,
+) -> Result<User, ApiError> {
+    sqlx::query_as::<_, User>(
+        "SELECT id, email, username, is_active FROM users WHERE id = $1"
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| match e {
+        SqlxError::RowNotFound => ApiError::NotFound("User not found".to_string()),
+        SqlxError::Database(db_err) => {
+            // Handle unique constraint violations
+            if db_err.code() == Some(std::borrow::Cow::Borrowed("23505")) {
+                ApiError::Conflict("User already exists".to_string())
+            } else {
+                ApiError::DatabaseError(db_err.to_string())
+            }
+        },
+        _ => ApiError::DatabaseError(e.to_string()),
+    })
+}
+```
+
+## Performance Tips
+
+### 1. Use Indexes
+
+```sql
+-- Single column
+CREATE INDEX idx_users_email ON users(email);
+
+-- Composite
+CREATE INDEX idx_users_active_created ON users(is_active, created_at DESC);
+
+-- Partial
+CREATE INDEX idx_users_active ON users(email) WHERE is_active = true;
+```
+
+### 2. Batch Operations
+
+```rust
+pub async fn batch_insert_users(
+    pool: &PgPool,
+    users: &[(String, String, String)],
+) -> Result<(), sqlx::Error> {
+    let mut query_builder = sqlx::QueryBuilder::new(
+        "INSERT INTO users (id, email, username) "
+    );
+    
+    query_builder.push_values(users, |mut b, (id, email, username)| {
+        b.push_bind(id)
+         .push_bind(email)
+         .push_bind(username);
+    });
+    
+    query_builder.build().execute(pool).await?;
+    Ok(())
+}
+```
+
+### 3. Use Connection from Pool Efficiently
+
+```rust
+// Good: Fetch multiple related data with one connection
+pub async fn get_user_with_posts(
+    pool: &PgPool,
+    user_id: &str,
+) -> Result<(User, Vec<Post>), sqlx::Error> {
+    let mut conn = pool.acquire().await?;
+    
+    let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1")
+        .bind(user_id)
+        .fetch_one(&mut *conn)
+        .await?;
+    
+    let posts = sqlx::query_as::<_, Post>("SELECT * FROM posts WHERE user_id = $1")
+        .bind(user_id)
+        .fetch_all(&mut *conn)
+        .await?;
+    
+    Ok((user, posts))
+}
+```
+
+### 4. Use Prepared Statements
+
+SQLx automatically uses prepared statements for all queries, which improves performance for repeated queries.
+
+## Troubleshooting
+
+### Connection Pool Exhaustion
+
+**Symptom:** `timed out while waiting for an open connection`
+
+**Solutions:**
+- Increase `max_connections`
+- Reduce `acquire_timeout` to fail fast
+- Check for connection leaks (unclosed transactions)
+- Monitor slow queries
+
+### Deadlocks
+
+**Symptom:** `deadlock detected`
+
+**Solutions:**
+- Always acquire locks in the same order
+- Keep transactions short
+- Use `SELECT ... FOR UPDATE NOWAIT` to fail fast
+
+### Query Performance
+
+**Symptom:** Slow queries
+
+**Solutions:**
+- Use `EXPLAIN ANALYZE` to understand query plans
+- Add appropriate indexes
+- Avoid `SELECT *`, fetch only needed columns
+- Use connection pooling
+- Consider query result caching
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Database Migrations" icon="arrows-rotate" href="/database/migrations">
+    Learn how to manage schema changes with SQLx migrations
+  </Card>
+  <Card title="Configuration" icon="gear" href="/database/configuration">
+    Fine-tune your database connection settings
+  </Card>
+</CardGroup>

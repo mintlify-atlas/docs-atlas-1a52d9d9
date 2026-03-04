@@ -1,0 +1,570 @@
+---
+title: Configuration
+description: Configuration management and environment-based settings
+---
+
+Ironclad uses a type-safe configuration system that loads settings from environment variables with sensible defaults.
+
+## Configuration Structure
+
+### Main Configuration
+
+```rust src/config/mod.rs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppConfig {
+    pub server: ServerConfig,
+    pub db_postgres: PostgresConfig,
+    pub db_mysql: Option<MySqlConfig>,
+    pub mongodb: Option<MongoDBConfig>,
+    pub jwt: JwtConfig,
+    pub bcrypt: BcryptConfig,  
+}
+```
+
+### Server Configuration
+
+```rust src/config/mod.rs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerConfig {
+    pub host: String,
+    pub port: u16,
+    pub env: String,
+}
+```
+
+### Database Configuration
+
+**PostgreSQL**
+```rust src/config/mod.rs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostgresConfig {
+    pub postgres_url: String,
+    pub max_connections: u32,
+    pub min_connections: u32,
+    pub acquire_timeout: u64,
+    pub idle_timeout: u64,
+}
+```
+
+**MySQL (Optional)**
+```rust src/config/mod.rs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MySqlConfig {
+    pub mysql_url: String,
+    pub max_connections: u32,
+    pub min_connections: u32,
+    pub acquire_timeout: u64,
+    pub idle_timeout: u64,
+}
+```
+
+**MongoDB (Optional)**
+```rust src/config/mod.rs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MongoDBConfig {
+    pub mongo_url: String,
+    pub database_name: String,
+}
+```
+
+### Security Configuration
+
+**JWT**
+```rust src/config/mod.rs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JwtConfig {
+    pub secret: String,
+    pub expiration: i64,
+}
+```
+
+**Bcrypt**
+```rust src/config/mod.rs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BcryptConfig {
+    pub cost: u32,
+}
+```
+
+## Loading Configuration
+
+### From Environment Variables
+
+```rust src/config/mod.rs
+impl AppConfig {
+    pub fn from_env() -> Result<Self> {
+        dotenv::dotenv().ok();
+
+        let config = AppConfig {
+            server: ServerConfig {
+                host: env::var("SERVER_HOST").unwrap_or_else(|_| "127.0.0.1".to_string()),
+                port: env::var("SERVER_PORT")
+                    .unwrap_or_else(|_| "8080".to_string())
+                    .parse()?,
+                env: env::var("ENVIRONMENT").unwrap_or_else(|_| "development".to_string()),
+            },
+            db_postgres: PostgresConfig {
+                postgres_url: env::var("DATABASE_URL")
+                    .unwrap_or_else(|_| "postgresql://user:password@localhost/template_db".to_string()),
+                max_connections: env::var("DB_MAX_CONNECTIONS")
+                    .unwrap_or_else(|_| "5".to_string())
+                    .parse()?,
+                min_connections: env::var("DB_MIN_CONNECTIONS")
+                    .unwrap_or_else(|_| "1".to_string())
+                    .parse()?,
+                acquire_timeout: env::var("DB_ACQUIRE_TIMEOUT")
+                    .unwrap_or_else(|_| "5".to_string())
+                    .parse()?,
+                idle_timeout: env::var("DB_IDLE_TIMEOUT")
+                    .unwrap_or_else(|_| "300".to_string())
+                    .parse()?,
+            },
+            jwt: JwtConfig {
+                secret: env::var("JWT_SECRET")
+                    .unwrap_or_else(|_| "your-secret-key-change-in-production".to_string()),
+                expiration: env::var("JWT_EXPIRATION")
+                    .unwrap_or_else(|_| "86400".to_string())
+                    .parse()?,
+            },
+            bcrypt: BcryptConfig {
+                cost: env::var("BCRYPT_COST")
+                    .unwrap_or_else(|_| {
+                        match env::var("ENVIRONMENT").as_deref() {
+                            Ok("production") => "12",
+                            Ok("staging") => "10",
+                            _ => "8",
+                        }
+                        .to_string()
+                    })
+                    .parse()
+                    .unwrap_or(10),  
+            },
+            // Optional databases
+            db_mysql: if let Ok(mysql_url) = env::var("MYSQL_URL") {
+                Some(MySqlConfig { /* ... */ })
+            } else {
+                None
+            },
+            mongodb: if let Ok(mongo_url) = env::var("MONGODB_URL") {
+                Some(MongoDBConfig { /* ... */ })
+            } else {
+                None
+            },
+        };
+
+        Ok(config)
+    }
+}
+```
+
+### In Application Startup
+
+```rust src/main.rs
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    // Load configuration
+    let app_config = AppConfig::from_env().expect("Failed to load config");
+
+    // Configure logging
+    tracing_subscriber::fmt()
+        .without_time()
+        .with_target(false)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::new("info,actix_server=warn,ironclads=debug")
+        )
+        .init();
+
+    tracing::info!("Server: http://{}:{}", app_config.server.host, app_config.server.port);
+
+    // Validate security configuration
+    validate_security_config(&app_config);
+
+    // Initialize database
+    let pg_pool = db::postgres::init_pool(&app_config.db_postgres)
+        .await
+        .expect("Failed to initialize PostgreSQL pool");
+
+    // Start server
+    HttpServer::new(move || {
+        App::new()
+            .app_data(web::Data::new(app_config.clone()))
+            // ... middleware and routes
+    })
+    .bind(&address)?
+    .run()
+    .await
+}
+```
+
+## Environment Variables
+
+### .env File Example
+
+```bash .env
+# Server Configuration
+SERVER_HOST=127.0.0.1
+SERVER_PORT=8080
+ENVIRONMENT=development
+
+# PostgreSQL Database
+DATABASE_URL=postgresql://user:password@localhost:5432/template_db
+DB_MAX_CONNECTIONS=5
+DB_MIN_CONNECTIONS=1
+DB_ACQUIRE_TIMEOUT=5
+DB_IDLE_TIMEOUT=300
+
+# MySQL Database (optional)
+MYSQL_URL=mysql://user:password@localhost:3306/template_db
+MYSQL_MAX_CONNECTIONS=5
+MYSQL_MIN_CONNECTIONS=1
+MYSQL_ACQUIRE_TIMEOUT=5
+MYSQL_IDLE_TIMEOUT=300
+
+# MongoDB (optional)
+MONGODB_URL=mongodb://localhost:27017
+MONGODB_NAME=template_db
+
+# JWT Authentication
+JWT_SECRET=your-secret-key-change-in-production
+JWT_EXPIRATION=86400
+
+# Bcrypt Password Hashing
+BCRYPT_COST=8
+```
+
+### Environment-Specific Configuration
+
+**Development (.env.development)**
+```bash
+ENVIRONMENT=development
+SERVER_HOST=127.0.0.1
+SERVER_PORT=8080
+BCRYPT_COST=8
+RUST_LOG=debug
+```
+
+**Staging (.env.staging)**
+```bash
+ENVIRONMENT=staging
+SERVER_HOST=0.0.0.0
+SERVER_PORT=8080
+BCRYPT_COST=10
+RUST_LOG=info
+```
+
+**Production (.env.production)**
+```bash
+ENVIRONMENT=production
+SERVER_HOST=0.0.0.0
+SERVER_PORT=8080
+JWT_SECRET=<strong-random-secret-at-least-32-chars>
+BCRYPT_COST=12
+RUST_LOG=warn
+```
+
+## Configuration Validation
+
+### Security Validation
+
+```rust src/config/validators.rs
+pub fn validate_security_config(config: &AppConfig) {
+    validate_bcrypt_cost(config);
+    validate_jwt_config(config);
+}
+```
+
+### Bcrypt Cost Validation
+
+```rust src/config/validators.rs
+fn validate_bcrypt_cost(config: &AppConfig) {
+    if config.bcrypt.cost < 4 {
+        tracing::error!(
+            "🔴 BCRYPT_COST={} is CRITICALLY LOW for security (minimum: 4)", 
+            config.bcrypt.cost
+        );
+    }
+
+    match config.server.env.as_str() {
+        "production" => validate_production_bcrypt(config),
+        "staging" => validate_staging_bcrypt(config),
+        "development" => validate_development_bcrypt(config),
+        _ => {
+            tracing::warn!("⚠️  Unknown environment: {}", config.server.env);
+        }
+    }
+}
+
+fn validate_production_bcrypt(config: &AppConfig) {
+    if config.bcrypt.cost < 10 {
+        tracing::error!(
+            "🔴 BCRYPT_COST={} is TOO LOW for production (minimum: 10, recommended: 12)", 
+            config.bcrypt.cost
+        );
+        std::process::exit(1);  // Block production deployment
+    } else if config.bcrypt.cost >= 12 {
+        tracing::info!("✅ BCRYPT_COST={} is IDEAL for production", config.bcrypt.cost);
+    }
+}
+```
+
+### JWT Validation
+
+```rust src/config/validators.rs
+fn validate_jwt_config(config: &AppConfig) {
+    if config.server.env == "production" {
+        if config.jwt.secret.len() < 32 {
+            tracing::error!("🔴 JWT_SECRET is too short for production (minimum: 32 characters)");
+            std::process::exit(1);
+        }
+        
+        if config.jwt.secret.contains("change") || config.jwt.secret.contains("secret") {
+            tracing::error!("🔴 JWT_SECRET appears to be a default value - change it!");
+            std::process::exit(1);
+        }
+        
+        tracing::info!("✅ JWT configuration is secure for production");
+    }
+}
+```
+
+## Configuration Best Practices
+
+<Tip>
+**Environment-Based Defaults**
+
+The framework automatically adjusts security settings based on environment:
+
+- **Development**: `BCRYPT_COST=8` (fast, less secure)
+- **Staging**: `BCRYPT_COST=10` (balanced)
+- **Production**: `BCRYPT_COST=12` (secure, slower)
+</Tip>
+
+<Warning>
+**Production Security Requirements**
+
+The application will exit on startup if production settings are insecure:
+- `BCRYPT_COST` must be ≥ 10 (recommended: 12)
+- `JWT_SECRET` must be ≥ 32 characters
+- `JWT_SECRET` cannot contain "change" or "secret"
+</Warning>
+
+### Generating Secure Secrets
+
+```bash
+# Generate 32-byte random secret (Linux/Mac)
+openssl rand -base64 32
+
+# Generate 32-byte random secret (PowerShell)
+[Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Minimum 0 -Maximum 256 }))
+
+# Example output
+R8vQ2x9mP4kL7nW5tY8jH1oU6zE3bN0c
+```
+
+## Accessing Configuration
+
+### In Application State
+
+```rust
+use actix_web::web;
+use crate::config::AppConfig;
+
+pub async fn handler(
+    config: web::Data<AppConfig>,
+) -> Result<HttpResponse, ApiError> {
+    let jwt_expiration = config.jwt.expiration;
+    let environment = &config.server.env;
+    
+    // Use configuration
+    Ok(HttpResponse::Ok().json(json!({
+        "environment": environment,
+        "token_expiration": jwt_expiration,
+    })))
+}
+```
+
+### In Services
+
+```rust
+use crate::config::AppConfig;
+
+pub struct AuthService {
+    config: AppConfig,
+}
+
+impl AuthService {
+    pub fn new(config: AppConfig) -> Self {
+        Self { config }
+    }
+
+    pub fn generate_token(&self, user_id: Uuid) -> Result<String, ApiError> {
+        let expiration = chrono::Utc::now()
+            .checked_add_signed(chrono::Duration::seconds(self.config.jwt.expiration))
+            .unwrap();
+
+        // Generate token with configured expiration
+        // ...
+    }
+}
+```
+
+## Database Connection Pooling
+
+### PostgreSQL Pool Configuration
+
+```rust
+use sqlx::postgres::{PgPoolOptions, PgPool};
+use crate::config::PostgresConfig;
+
+pub async fn init_pool(config: &PostgresConfig) -> Result<PgPool, sqlx::Error> {
+    PgPoolOptions::new()
+        .max_connections(config.max_connections)
+        .min_connections(config.min_connections)
+        .acquire_timeout(std::time::Duration::from_secs(config.acquire_timeout))
+        .idle_timeout(std::time::Duration::from_secs(config.idle_timeout))
+        .connect(&config.postgres_url)
+        .await
+}
+```
+
+### Connection Pool Best Practices
+
+<Tip>
+**Pool Size Guidelines**
+
+- **Development**: 2-5 connections
+- **Staging**: 5-10 connections
+- **Production**: 10-50 connections (based on load)
+
+Formula: `max_connections = (CPU cores * 2) + effective_disk_spindles`
+</Tip>
+
+## Configuration Testing
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bcrypt_cost_validation() {
+        let config = AppConfig {
+            server: ServerConfig {
+                env: "production".to_string(),
+                // ...
+            },
+            bcrypt: BcryptConfig { cost: 8 },
+            // ...
+        };
+
+        // This should fail validation
+        let result = std::panic::catch_unwind(|| {
+            validate_bcrypt_cost(&config);
+        });
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_jwt_secret_length() {
+        let config = AppConfig {
+            jwt: JwtConfig {
+                secret: "short".to_string(),
+                expiration: 86400,
+            },
+            server: ServerConfig {
+                env: "production".to_string(),
+                // ...
+            },
+            // ...
+        };
+
+        assert!(config.jwt.secret.len() < 32);
+    }
+}
+```
+
+## Environment-Specific Features
+
+### Conditional Middleware
+
+```rust
+use crate::config::AppConfig;
+
+HttpServer::new(move || {
+    let mut app = App::new();
+
+    // Add debug middleware only in development
+    if app_config.server.env == "development" {
+        app = app.wrap(actix_web::middleware::Logger::default());
+    }
+
+    // Add strict security headers in production
+    if app_config.server.env == "production" {
+        app = app.wrap(actix_web::middleware::DefaultHeaders::new()
+            .add(("X-Content-Type-Options", "nosniff"))
+            .add(("X-Frame-Options", "DENY")));
+    }
+
+    app
+})
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Configuration not loading">
+    **Problem:** Environment variables not loading
+    
+    **Solution:** Ensure `.env` file is in project root
+    ```bash
+    # Check .env file location
+    ls -la .env
+    
+    # Test loading
+    dotenv -- cargo run
+    ```
+  </Accordion>
+
+  <Accordion title="Production startup fails">
+    **Problem:** Application exits on startup in production
+    
+    **Solution:** Check security validation errors
+    ```bash
+    # Logs will show:
+    # 🔴 BCRYPT_COST=8 is TOO LOW for production
+    # 🔴 JWT_SECRET is too short for production
+    
+    # Fix in .env:
+    BCRYPT_COST=12
+    JWT_SECRET=<generate-32-char-secret>
+    ```
+  </Accordion>
+
+  <Accordion title="Database connection fails">
+    **Problem:** Cannot connect to database
+    
+    **Solution:** Verify connection string format
+    ```bash
+    # PostgreSQL
+    DATABASE_URL=postgresql://username:password@host:port/database
+    
+    # MySQL
+    MYSQL_URL=mysql://username:password@host:port/database
+    
+    # MongoDB
+    MONGODB_URL=mongodb://host:port
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Logging" icon="file-lines" href="/advanced/logging">
+    Configure structured logging
+  </Card>
+  <Card title="Deployment" icon="rocket" href="/deployment">
+    Deploy your application
+  </Card>
+</CardGroup>

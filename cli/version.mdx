@@ -1,0 +1,89 @@
+---
+title: Version Command
+description: Display framework version and system information
+---
+
+The `version` command displays the Rust Ironclad Framework version, package version, and current working directory.
+
+## Usage
+
+```bash
+cargo run --bin ironclad -- version
+```
+
+### With Alias
+
+```bash
+ironclad version
+```
+
+## Output Example
+
+```
+╔════════════════════════════════════════╗
+║   🦀 Rust Ironclad Framework v1.0.0   ║
+╚════════════════════════════════════════╝
+
+Framework: Rust Ironclad
+Version: 0.0.3
+Working directory: "/home/user/my-project"
+```
+
+## Information Displayed
+
+The command shows:
+
+- **Framework name**: Rust Ironclad
+- **Package version**: Read from `Cargo.toml` using `env!("CARGO_PKG_VERSION")`
+- **Working directory**: Current working directory where the command was executed
+
+## When to Use
+
+Use this command to:
+
+- Verify the CLI is installed correctly
+- Check which version of the framework you're running
+- Confirm the working directory is correct
+- Debug CLI installation issues
+- Include version information in bug reports
+
+## Version Information
+
+The version number follows [Semantic Versioning](https://semver.org/):
+
+- **Major version**: Breaking changes
+- **Minor version**: New features (backward compatible)
+- **Patch version**: Bug fixes
+
+Example: `1.0.0` means Major.Minor.Patch
+
+## Related Commands
+
+<CardGroup cols={2}>
+  <Card title="Test Command" icon="stethoscope" href="#test-command">
+    Run CLI diagnostics
+  </Card>
+  <Card title="CLI Overview" icon="terminal" href="/cli/overview">
+    View all available CLI commands
+  </Card>
+</CardGroup>
+
+## Test Command
+
+For more detailed diagnostics, use the `test` command:
+
+```bash
+cargo run --bin ironclad -- test
+```
+
+**Output:**
+```
+🔍 Running CLI diagnostics...
+
+✅ CLI binary is working
+✅ Clap argument parsing is working
+✅ Project structure is correct
+📁 Working directory: "/home/user/my-project"
+
+🎉 Everything looks good!
+```

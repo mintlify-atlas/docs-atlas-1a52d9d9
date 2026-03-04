@@ -1,0 +1,404 @@
+---
+title: Database Migrations
+description: Working with SQLx migrations in Ironclad
+---
+
+## Overview
+
+Ironclad uses SQLx for database migrations, providing compile-time verified SQL queries and robust migration management. Migrations are SQL files stored in the `migrations/` directory that are executed in order.
+
+## Migration Files
+
+Migrations are plain SQL files with numeric prefixes to ensure correct execution order:
+
+```
+migrations/
+├── 001_create_users_table.sql
+├── 002_add_role_to_users.sql
+└── 003_create_test_table.sql
+```
+
+## Creating Your First Migration
+
+### Migration File Structure
+
+Each migration file should:
+1. Have a numeric prefix (e.g., `001_`, `002_`)
+2. Have a descriptive name
+3. Use the `.sql` extension
+4. Contain valid SQL statements
+
+### Example: Create Users Table
+
+`migrations/001_create_users_table.sql`:
+
+```sql
+-- Migration to create users table
+CREATE TABLE IF NOT EXISTS users (
+    id VARCHAR(36) PRIMARY KEY,
+    email VARCHAR(255) NOT NULL UNIQUE,
+    username VARCHAR(100) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL
+);
+
+-- Index
+CREATE INDEX idx_users_email ON users(email);
+CREATE INDEX idx_users_username ON users(username);
+```
+
+### Example: Alter Existing Table
+
+`migrations/002_add_role_to_users.sql`:
+
+```sql
+-- Add role column to users table
+ALTER TABLE users ADD COLUMN role VARCHAR(50) NOT NULL DEFAULT 'user';
+
+-- Create an index on role for faster queries
+CREATE INDEX idx_users_role ON users(role);
+```
+
+### Example: Create Related Table
+
+`migrations/003_create_test_table.sql`:
+
+```sql
+-- Create test_items table
+CREATE TABLE IF NOT EXISTS test_items (
+    id VARCHAR(36) PRIMARY KEY,
+    subject VARCHAR(255) NOT NULL,
+    optional_field TEXT,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+-- Index for faster queries
+CREATE INDEX idx_test_items_created_at ON test_items(created_at DESC);
+```
+
+## Running Migrations
+
+### Using SQLx CLI
+
+Install the SQLx CLI tool:
+
+```bash
+cargo install sqlx-cli --no-default-features --features postgres
+```
+
+### Run All Pending Migrations
+
+```bash
+sqlx migrate run
+```
+
+This command:
+- Connects to the database using `DATABASE_URL` from your `.env` file
+- Checks which migrations have already been applied
+- Executes any pending migrations in order
+- Records the migration in the `_sqlx_migrations` table
+
+### Check Migration Status
+
+```bash
+sqlx migrate info
+```
+
+Shows:
+- Which migrations have been applied
+- Which migrations are pending
+- Migration timestamps
+
+### Revert Last Migration
+
+```bash
+sqlx migrate revert
+```
+
+**Note:** This only works if you've created a corresponding "down" migration file.
+
+## Migration Best Practices
+
+### 1. Always Use Migrations for Schema Changes
+
+Never modify the database schema directly. Always create a migration file:
+
+```bash
+# Create a new migration file
+touch migrations/004_add_user_profile.sql
+```
+
+### 2. Make Migrations Idempotent
+
+Use `IF NOT EXISTS` and `IF EXISTS` clauses:
+
+```sql
+-- Safe to run multiple times
+CREATE TABLE IF NOT EXISTS users (...);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(50);
+```
+
+### 3. Include Indexes
+
+Create indexes for frequently queried columns:
+
+```sql
+-- Single column index
+CREATE INDEX idx_users_email ON users(email);
+
+-- Composite index
+CREATE INDEX idx_users_active_created ON users(is_active, created_at DESC);
+
+-- Unique index
+CREATE UNIQUE INDEX idx_users_username ON users(username);
+```
+
+### 4. Use Appropriate Data Types
+
+```sql
+-- UUID for IDs
+id VARCHAR(36) PRIMARY KEY
+
+-- Timestamps with timezone
+created_at TIMESTAMP WITH TIME ZONE NOT NULL
+
+-- Email addresses
+email VARCHAR(255) NOT NULL UNIQUE
+
+-- Large text content
+bio TEXT
+
+-- Boolean flags
+is_active BOOLEAN NOT NULL DEFAULT TRUE
+```
+
+### 5. Add Comments
+
+Document the purpose of migrations:
+
+```sql
+-- Migration: Add user profile fields
+-- Date: 2024-01-15
+-- Purpose: Support user profile customization feature
+
+ALTER TABLE users ADD COLUMN bio TEXT;
+ALTER TABLE users ADD COLUMN avatar_url VARCHAR(512);
+```
+
+### 6. Test Migrations Locally
+
+Always test migrations on a local database before deploying:
+
+```bash
+# Create a test database
+createdb myapp_test
+
+# Set test database URL
+export DATABASE_URL=postgresql://postgres:password@localhost:5432/myapp_test
+
+# Run migrations
+sqlx migrate run
+
+# Verify the schema
+psql myapp_test -c "\dt"
+```
+
+## SQLx Compile-Time Verification
+
+### What is Compile-Time Verification?
+
+SQLx verifies your SQL queries at compile time, catching errors before runtime. This requires the database schema to be available during compilation.
+
+### Prepare for Offline Mode
+
+Generate query metadata for offline compilation:
+
+```bash
+cargo sqlx prepare
+```
+
+This creates `sqlx-data.json` with query metadata, allowing compilation without a database connection.
+
+### Example: Compile-Time Checked Query
+
+```rust
+use sqlx::PgPool;
+
+#[derive(sqlx::FromRow)]
+pub struct User {
+    pub id: String,
+    pub email: String,
+    pub username: String,
+    pub is_active: bool,
+}
+
+pub async fn get_user_by_email(
+    pool: &PgPool,
+    email: &str,
+) -> Result<Option<User>, sqlx::Error> {
+    // This query is verified at compile time!
+    sqlx::query_as::<_, User>(
+        "SELECT id, email, username, is_active FROM users WHERE email = $1"
+    )
+    .bind(email)
+    .fetch_optional(pool)
+    .await
+}
+```
+
+If you make a typo in the query (e.g., `FROM user` instead of `FROM users`), the code won't compile!
+
+## Advanced Migration Patterns
+
+### Data Migrations
+
+Sometimes you need to migrate existing data:
+
+```sql
+-- Add new column with default
+ALTER TABLE users ADD COLUMN full_name VARCHAR(255);
+
+-- Populate from existing data
+UPDATE users SET full_name = CONCAT(first_name, ' ', last_name) WHERE full_name IS NULL;
+
+-- Make it required
+ALTER TABLE users ALTER COLUMN full_name SET NOT NULL;
+```
+
+### Foreign Keys
+
+Create relationships between tables:
+
+```sql
+CREATE TABLE posts (
+    id VARCHAR(36) PRIMARY KEY,
+    user_id VARCHAR(36) NOT NULL,
+    title VARCHAR(255) NOT NULL,
+    content TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    
+    -- Foreign key constraint
+    CONSTRAINT fk_posts_user
+        FOREIGN KEY (user_id)
+        REFERENCES users(id)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX idx_posts_user_id ON posts(user_id);
+```
+
+### Enum Types
+
+PostgreSQL supports custom enum types:
+
+```sql
+-- Create enum type
+CREATE TYPE user_role AS ENUM ('admin', 'moderator', 'user', 'guest');
+
+-- Use in table
+ALTER TABLE users ALTER COLUMN role TYPE user_role USING role::user_role;
+```
+
+### Full-Text Search
+
+Add full-text search capabilities:
+
+```sql
+-- Add tsvector column for full-text search
+ALTER TABLE posts ADD COLUMN search_vector tsvector;
+
+-- Create trigger to update search vector
+CREATE TRIGGER posts_search_update
+BEFORE INSERT OR UPDATE ON posts
+FOR EACH ROW EXECUTE FUNCTION
+tsvector_update_trigger(search_vector, 'pg_catalog.english', title, content);
+
+-- Create GIN index for fast full-text search
+CREATE INDEX idx_posts_search ON posts USING GIN(search_vector);
+```
+
+## Migration Workflow
+
+### Development
+
+1. Create migration file
+2. Write SQL statements
+3. Test locally: `sqlx migrate run`
+4. Update query metadata: `cargo sqlx prepare`
+5. Commit migration file and metadata
+
+### Staging/Production
+
+1. Pull latest code with migrations
+2. Run migrations: `sqlx migrate run`
+3. Verify schema changes
+4. Deploy application
+
+## Troubleshooting
+
+### Migration Already Applied
+
+**Error:** `migration has already been applied`
+
+**Solution:** The migration has already run. Check with `sqlx migrate info` or skip if intentional.
+
+### Syntax Error in Migration
+
+**Error:** `syntax error at or near "TABLE"`
+
+**Solution:**
+- Verify SQL syntax is correct for PostgreSQL
+- Test the SQL in `psql` or another PostgreSQL client
+- Check for missing semicolons or commas
+
+### Cannot Connect to Database
+
+**Error:** `error: connection refused`
+
+**Solution:**
+- Verify `DATABASE_URL` in `.env` is correct
+- Ensure database server is running
+- Check network connectivity and firewall rules
+
+### Migration Conflicts
+
+**Error:** Multiple migrations with same number
+
+**Solution:**
+- Use unique numeric prefixes for each migration
+- Coordinate with team members on migration numbering
+- Consider using timestamps: `20240115_create_users.sql`
+
+### Compile-Time Query Verification Failed
+
+**Error:** `query does not match database schema`
+
+**Solution:**
+- Run `sqlx migrate run` to apply latest migrations
+- Run `cargo sqlx prepare` to update query metadata
+- Ensure `DATABASE_URL` points to an up-to-date database
+
+## Tips
+
+1. **Keep migrations small**: Each migration should do one thing
+2. **Test thoroughly**: Always test migrations on a copy of production data
+3. **Version control**: Commit migration files to git
+4. **Document changes**: Add comments explaining complex migrations
+5. **Use transactions**: Most DDL statements in PostgreSQL are transactional
+6. **Plan rollback strategy**: Consider how to undo changes if needed
+7. **Coordinate with team**: Avoid migration conflicts by communicating schema changes
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="PostgreSQL Features" icon="database" href="/database/postgres">
+    Explore PostgreSQL-specific features in Ironclad
+  </Card>
+  <Card title="Database Configuration" icon="gear" href="/database/configuration">
+    Learn about connection pooling and configuration
+  </Card>
+</CardGroup>

@@ -1,0 +1,597 @@
+---
+title: Authorization
+description: Role-based access control with custom extractors for protected routes
+---
+
+## Overview
+
+Ironclad provides a powerful role-based authorization system using custom Actix-web extractors. This allows you to declaratively enforce access control at the handler level.
+
+## Role System
+
+Ironclad includes a type-safe role system with four built-in roles:
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum Role {
+    Admin,
+    User,
+    Moderator,
+    Premium,
+}
+```
+
+See `role.rs:4-10`.
+
+### Role Methods
+
+```rust
+impl Role {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Role::Admin => "admin",
+            Role::User => "user",
+            Role::Moderator => "moderator",
+            Role::Premium => "premium",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "admin" => Some(Role::Admin),
+            "user" => Some(Role::User),
+            "moderator" => Some(Role::Moderator),
+            "premium" => Some(Role::Premium),
+            _ => None,
+        }
+    }
+
+    pub fn is_admin(&self) -> bool {
+        matches!(self, Role::Admin)
+    }
+
+    pub fn can_moderate(&self) -> bool {
+        matches!(self, Role::Admin | Role::Moderator)
+    }
+}
+```
+
+See `role.rs:12-40`.
+
+## Authorization Extractors
+
+Ironclad provides several extractors for different authorization levels. All extractors verify JWT tokens and extract claims automatically.
+
+### AuthUser - Any Authenticated User
+
+The most basic extractor that allows any authenticated user:
+
+```rust
+use actix_web::{web, HttpResponse};
+use crate::infrastructure::http::authentication::AuthUser;
+use crate::errors::ApiResult;
+
+pub async fn get_profile(
+    auth: AuthUser,
+) -> ApiResult<HttpResponse> {
+    let user_id = &auth.0.sub;
+    let email = &auth.0.email;
+    let role = &auth.0.role;
+    
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "user_id": user_id,
+        "email": email,
+        "role": role
+    })))
+}
+```
+
+See `authentication.rs:10-20` for the implementation.
+
+### AdminUser - Admin Only
+
+Restricts access to users with the `admin` role:
+
+```rust
+use crate::infrastructure::http::authentication::AdminUser;
+
+pub async fn admin_dashboard(
+    _admin: AdminUser,
+) -> ApiResult<HttpResponse> {
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "message": "Welcome to the admin dashboard"
+    })))
+}
+```
+
+See `authentication.rs:25-43` for the implementation.
+
+**Example from the codebase:**
+
+```rust
+pub async fn verify_admin(
+    _service: web::Data<Arc<AuthService>>,
+    _admin: AdminUser,
+) -> ApiResult<HttpResponse> {
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "message": "You are an admin!",
+        "verified": true
+    })))
+}
+```
+
+See `auth_controller.rs:31-39`.
+
+### ModeratorUser - Admin or Moderator
+
+Allows access to both admins and moderators:
+
+```rust
+use crate::infrastructure::http::authentication::ModeratorUser;
+
+pub async fn moderate_content(
+    moderator: ModeratorUser,
+) -> ApiResult<HttpResponse> {
+    let user_id = &moderator.0.sub;
+    
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "message": "You can moderate content",
+        "moderator_id": user_id
+    })))
+}
+```
+
+See `authentication.rs:48-66` for the implementation.
+
+### PremiumUser - Admin, Moderator, or Premium
+
+Allows access to premium features for multiple role types:
+
+```rust
+use crate::infrastructure::http::authentication::PremiumUser;
+
+pub async fn premium_feature(
+    premium: PremiumUser,
+) -> ApiResult<HttpResponse> {
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "message": "Access to premium feature granted"
+    })))
+}
+```
+
+See `authentication.rs:71-89` for the implementation.
+
+### RoleUser - Flexible Role Checking
+
+Provides flexible role checking methods for custom authorization logic:
+
+```rust
+use crate::infrastructure::http::authentication::RoleUser;
+
+pub async fn flexible_endpoint(
+    user: RoleUser,
+) -> ApiResult<HttpResponse> {
+    // Check specific role
+    if user.has_role("admin") {
+        // Admin-specific logic
+    }
+    
+    // Check multiple roles
+    if user.has_any_role(&["admin", "premium"]) {
+        // Premium features
+    }
+    
+    // Access user data
+    let user_id = user.user_id();
+    let email = user.email();
+    let role = user.role();
+    
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "user_id": user_id,
+        "email": email,
+        "role": role
+    })))
+}
+```
+
+See `authentication.rs:94-130` for the implementation.
+
+### RoleUser Methods
+
+```rust
+impl RoleUser {
+    pub fn has_role(&self, role: &str) -> bool {
+        self.0.has_role(role)
+    }
+
+    pub fn has_any_role(&self, roles: &[&str]) -> bool {
+        self.0.has_any_role(roles)
+    }
+
+    pub fn is_admin(&self) -> bool {
+        self.0.is_admin()
+    }
+
+    pub fn user_id(&self) -> &str {
+        &self.0.sub
+    }
+
+    pub fn email(&self) -> &str {
+        &self.0.email
+    }
+
+    pub fn role(&self) -> &str {
+        &self.0.role
+    }
+}
+```
+
+See `authentication.rs:97-121`.
+
+## JWT Claims
+
+All extractors work with JWT claims that contain user information:
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Claims {
+    pub sub: String,      // User ID
+    pub email: String,    // User email
+    pub role: String,     // User role
+    pub exp: i64,         // Token expiration
+    pub iat: i64,         // Token issued at
+}
+```
+
+See `user.rs:152-159`.
+
+### Claims Methods
+
+```rust
+impl Claims {
+    pub fn new(user_id: String, email: String, role: String, exp: i64) -> Self {
+        let iat = Utc::now().timestamp();
+        Self { sub: user_id, email, role, exp, iat }
+    }
+
+    pub fn is_admin(&self) -> bool { 
+        self.role == "admin" 
+    }
+    
+    pub fn has_role(&self, required_role: &str) -> bool { 
+        self.role == required_role 
+    }
+    
+    pub fn has_any_role(&self, roles: &[&str]) -> bool { 
+        roles.contains(&self.role.as_str()) 
+    }
+}
+```
+
+See `user.rs:161-170`.
+
+## How Extractors Work
+
+All authorization extractors implement Actix-web's `FromRequest` trait. Here's how they work:
+
+### Token Extraction
+
+```rust
+fn extract_claims(req: &HttpRequest) -> Result<Claims, ApiError> {
+    // 1. Get config from app data
+    let config = req
+        .app_data::<actix_web::web::Data<AppConfig>>()
+        .ok_or_else(|| ApiError::InternalServerError("Config not found".to_string()))?;
+
+    // 2. Extract Bearer token from Authorization header
+    let token = req
+        .headers()
+        .get("Authorization")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .ok_or(ApiError::Unauthorized)?;
+
+    // 3. Verify and decode JWT token
+    crate::utils::jwt::verify_token(token, config.get_ref())
+}
+```
+
+See `authentication.rs:135-148`.
+
+### AdminUser Implementation
+
+```rust
+impl FromRequest for AdminUser {
+    type Error = ApiError;
+    type Future = Ready<Result<Self, Self::Error>>;
+
+    fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
+        ready(
+            extract_claims(req).and_then(|claims| {
+                if claims.is_admin() {
+                    Ok(AdminUser(claims))
+                } else {
+                    Err(ApiError::Forbidden("Admin access required".to_string()))
+                }
+            })
+        )
+    }
+}
+```
+
+See `authentication.rs:28-43`.
+
+## Authorization Utilities
+
+Ironclad provides utility functions for common authorization patterns:
+
+### Verify Self or Admin
+
+Allows users to access their own resources or admins to access any resource:
+
+```rust
+use crate::utils::auth::verify_self_or_admin;
+use crate::infrastructure::http::authentication::AuthUser;
+
+pub async fn update_user(
+    auth: AuthUser,
+    path: web::Path<String>,
+) -> ApiResult<HttpResponse> {
+    let target_user_id = path.into_inner();
+    
+    // Verify user is updating their own profile or is admin
+    verify_self_or_admin(&auth.0, &target_user_id)?;
+    
+    // Proceed with update logic
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "message": "User updated successfully"
+    })))
+}
+```
+
+**Implementation:**
+
+```rust
+pub fn verify_self_or_admin(claims: &Claims, target_user_id: &str) -> Result<(), ApiError> {
+    if claims.sub == target_user_id || claims.role == "admin" {
+        Ok(())
+    } else {
+        Err(ApiError::Conflict("You don't have permission to access this resource".to_string()))
+    }
+}
+```
+
+See `auth.rs:23-29`.
+
+### Verify Admin
+
+```rust
+pub fn verify_admin(claims: &Claims) -> Result<(), ApiError> {
+    if claims.role == "admin" {
+        Ok(())
+    } else {
+        Err(ApiError::Conflict("You don't have permission to access this resource".to_string()))
+    }
+}
+```
+
+See `auth.rs:31-37`.
+
+## Dynamic Role Validation Macro
+
+For runtime role validation, use the `require_any_role!` macro:
+
+```rust
+use crate::require_any_role;
+use crate::infrastructure::http::authentication::AuthUser;
+
+pub async fn special_feature(
+    auth: AuthUser,
+) -> ApiResult<HttpResponse> {
+    // Require admin or premium role
+    require_any_role!(auth.0, "admin", "premium")?;
+    
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "message": "Access granted to special feature"
+    })))
+}
+```
+
+**Macro definition:**
+
+```rust
+#[macro_export]
+macro_rules! require_any_role {
+    ($claims:expr, $($role:literal),+ $(,)?) => {
+        {
+            let allowed = vec![$($role),+];
+            if allowed.contains(&$claims.role.as_str()) {
+                Ok(())
+            } else {
+                Err($crate::errors::ApiError::Forbidden(
+                    format!("Required roles: {}", allowed.join(", "))
+                ))
+            }
+        }
+    };
+}
+```
+
+See `authentication.rs:153-167`.
+
+## Route Configuration Examples
+
+### Basic Protected Route
+
+```rust
+use actix_web::web;
+use crate::infrastructure::http::controllers::UserController;
+
+pub fn configure_routes(cfg: &mut web::ServiceConfig) {
+    cfg.service(
+        web::scope("/api/users")
+            .route("/me", web::get().to(UserController::get_current_user))
+    );
+}
+```
+
+### Role-Based Route Groups
+
+```rust
+pub fn configure_admin_routes(cfg: &mut web::ServiceConfig) {
+    cfg.service(
+        web::scope("/api/admin")
+            .route("/users", web::get().to(AdminController::list_users))
+            .route("/users/{id}", web::delete().to(AdminController::delete_user))
+            .route("/stats", web::get().to(AdminController::get_stats))
+    );
+}
+```
+
+### Mixed Authorization Levels
+
+```rust
+pub fn configure_content_routes(cfg: &mut web::ServiceConfig) {
+    cfg.service(
+        web::scope("/api/content")
+            // Public endpoint
+            .route("/posts", web::get().to(ContentController::list_posts))
+            // Authenticated users can create
+            .route("/posts", web::post().to(ContentController::create_post))
+            // Moderators can delete
+            .route("/posts/{id}", web::delete().to(ContentController::delete_post))
+    );
+}
+```
+
+## Error Handling
+
+All extractors return appropriate error responses:
+
+### Unauthorized (401)
+
+Returned when:
+- No Authorization header is present
+- Token is invalid or expired
+- Token signature verification fails
+
+### Forbidden (403)
+
+Returned when:
+- User is authenticated but lacks required role
+- User tries to access resources they don't own
+
+```rust
+ApiError::Forbidden("Admin access required".to_string())
+```
+
+## Testing Authorization
+
+Test authorization logic with mock claims:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_claims_is_admin() {
+        let claims = Claims::new(
+            "user1".to_string(),
+            "user@test.com".to_string(),
+            "admin".to_string(),
+            1000
+        );
+        assert!(claims.is_admin());
+    }
+
+    #[test]
+    fn test_claims_has_any_role() {
+        let claims = Claims::new(
+            "user1".to_string(),
+            "user@test.com".to_string(),
+            "moderator".to_string(),
+            1000
+        );
+        assert!(claims.has_any_role(&["admin", "moderator"]));
+        assert!(!claims.has_any_role(&["admin", "premium"]));
+    }
+}
+```
+
+See `authentication.rs:169-185`.
+
+## Best Practices
+
+### Use the Most Specific Extractor
+
+Choose the extractor that matches your security requirements:
+
+<CodeGroup>
+```rust Good - Specific Extractor
+pub async fn admin_only(admin: AdminUser) -> ApiResult<HttpResponse> {
+    // Only admins can reach here
+}
+```
+
+```rust Bad - Manual Checking
+pub async fn admin_only(user: AuthUser) -> ApiResult<HttpResponse> {
+    // Manual role checking is error-prone
+    if user.0.role != "admin" {
+        return Err(ApiError::Forbidden("Admin required".to_string()));
+    }
+}
+```
+</CodeGroup>
+
+### Combine with Path Parameters
+
+Use `verify_self_or_admin` for user-specific resources:
+
+```rust
+pub async fn get_user_data(
+    auth: AuthUser,
+    user_id: web::Path<String>,
+) -> ApiResult<HttpResponse> {
+    verify_self_or_admin(&auth.0, &user_id)?;
+    // Fetch and return user data
+}
+```
+
+### Use RoleUser for Complex Logic
+
+When you need multiple authorization checks:
+
+```rust
+pub async fn complex_endpoint(
+    user: RoleUser,
+) -> ApiResult<HttpResponse> {
+    if user.is_admin() {
+        // Admin gets full data
+        return Ok(HttpResponse::Ok().json(get_full_data()));
+    }
+    
+    if user.has_any_role(&["premium", "moderator"]) {
+        // Premium users get enhanced data
+        return Ok(HttpResponse::Ok().json(get_premium_data()));
+    }
+    
+    // Regular users get basic data
+    Ok(HttpResponse::Ok().json(get_basic_data()))
+}
+```
+
+## Related Documentation
+
+<CardGroup cols={2}>
+  <Card title="Authentication" icon="shield" href="/security/authentication">
+    Learn about user registration, login, and JWT tokens
+  </Card>
+  <Card title="JWT Tokens" icon="key" href="/security/jwt">
+    Deep dive into JWT token generation and validation
+  </Card>
+</CardGroup>

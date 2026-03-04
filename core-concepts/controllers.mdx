@@ -1,0 +1,336 @@
+---
+title: Controllers
+description: Create and organize HTTP controllers in the Ironclad framework
+---
+
+Controllers handle HTTP requests and responses in Ironclad. They act as the entry point for your API, receiving requests, validating input, calling services, and returning responses.
+
+## Controller Structure
+
+Controllers are simple structs with static methods that handle specific routes:
+
+```rust src/infrastructure/http/controllers/auth_controller.rs
+use actix_web::{web, HttpResponse};
+use std::sync::Arc;
+
+use crate::application::dtos::{LoginRequest, RegisterUserRequest};
+use crate::application::services::AuthService;
+use crate::errors::ApiResult;
+use crate::infrastructure::http::authentication::{AdminUser, AuthUser};
+use crate::shared::ValidatedJson;
+
+pub struct AuthController;
+
+impl AuthController {
+    pub async fn register(
+        service: web::Data<Arc<AuthService>>,
+        req: ValidatedJson<RegisterUserRequest>,
+    ) -> ApiResult<HttpResponse> {
+        let response = service.register(req.0).await?;
+        Ok(HttpResponse::Created().json(response))
+    }
+
+    pub async fn login(
+        service: web::Data<Arc<AuthService>>,
+        req: ValidatedJson<LoginRequest>,
+    ) -> ApiResult<HttpResponse> {
+        let response = service.login(req.0).await?;
+        Ok(HttpResponse::Ok().json(response))
+    }
+}
+```
+
+## Controller Responsibilities
+
+Controllers should be thin and focused on HTTP concerns:
+
+1. **Extract request data** - Parse JSON, query params, path params
+2. **Validate input** - Use `ValidatedJson` for automatic validation
+3. **Call services** - Delegate business logic to application services
+4. **Return responses** - Map results to appropriate HTTP status codes
+
+<Warning>
+Controllers should NOT contain business logic. That belongs in [Services](/core-concepts/services).
+</Warning>
+
+## Request Handling Patterns
+
+### Automatic Validation
+
+Use `ValidatedJson` to automatically validate DTOs before processing:
+
+```rust src/infrastructure/http/controllers/test_item_controller.rs
+pub async fn create(
+    service: web::Data<Arc<TestItemService>>,
+    req: ValidatedJson<CreateTestItemRequest>,
+) -> ApiResult<HttpResponse> {
+    let item = service.create(req.0).await?;
+    Ok(HttpResponse::Created().json(item))
+}
+```
+
+The `ValidatedJson` extractor:
+- Automatically parses JSON from request body
+- Runs validation rules defined on the DTO
+- Returns `400 Bad Request` if validation fails
+- Extracts the validated DTO with `req.0`
+
+### Path Parameters
+
+Extract dynamic URL segments:
+
+```rust src/infrastructure/http/controllers/test_item_controller.rs
+pub async fn get_by_id(
+    service: web::Data<Arc<TestItemService>>,
+    id: web::Path<String>,
+) -> ApiResult<HttpResponse> {
+    let item = service.get_by_id(&id.into_inner()).await?
+        .ok_or_else(|| ApiError::NotFound("Test item not found".to_string()))?;
+    
+    Ok(HttpResponse::Ok().json(item))
+}
+```
+
+### Query Parameters
+
+Handle pagination and filtering with query params:
+
+```rust src/infrastructure/http/controllers/user_controller.rs
+#[derive(serde::Deserialize)]
+pub struct PaginationQuery {
+    pub page: Option<i32>,
+    pub per_page: Option<i32>,
+}
+
+pub async fn get_all_users(
+    service: web::Data<Arc<UserService>>,
+    _admin: AdminUser,
+    query: web::Query<PaginationQuery>,
+) -> ApiResult<HttpResponse> {
+    let page = query.page.unwrap_or(1);
+    let per_page = query.per_page.unwrap_or(20).min(100);
+    
+    let response = service.get_all_users(page, per_page).await?;
+    Ok(HttpResponse::Ok().json(response))
+}
+```
+
+## Authentication & Authorization
+
+Use extractors to enforce authentication requirements:
+
+### Authenticated User
+
+```rust src/infrastructure/http/controllers/user_controller.rs
+pub async fn get_profile(
+    service: web::Data<Arc<UserService>>,
+    auth: AuthUser,
+) -> ApiResult<HttpResponse> {
+    let user = service
+        .get_user(&auth.0.sub)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("User not found".to_string()))?;
+    
+    Ok(HttpResponse::Ok().json(user))
+}
+```
+
+The `AuthUser` extractor:
+- Verifies the JWT token
+- Returns `401 Unauthorized` if token is invalid
+- Provides access to user claims via `auth.0`
+
+### Admin-Only Endpoints
+
+```rust src/infrastructure/http/controllers/auth_controller.rs
+pub async fn verify_admin(
+    _service: web::Data<Arc<AuthService>>,
+    _admin: AdminUser,
+) -> ApiResult<HttpResponse> {
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "message": "You are an admin!",
+        "verified": true
+    })))
+}
+```
+
+The `AdminUser` extractor:
+- Verifies JWT token AND admin role
+- Returns `403 Forbidden` if user is not an admin
+
+### Authorization Checks
+
+Implement custom authorization logic when needed:
+
+```rust src/infrastructure/http/controllers/user_controller.rs
+pub async fn get_user(
+    service: web::Data<Arc<UserService>>,
+    auth: AuthUser,
+    user_id: web::Path<String>,
+) -> ApiResult<HttpResponse> {
+    let requested_id = user_id.into_inner();
+    
+    // Only admin or the same user can view
+    if auth.0.sub != requested_id && !auth.0.is_admin() {
+        return Err(ApiError::Forbidden(
+            "You don't have permission to view this user".to_string(),
+        ));
+    }
+    
+    let user = service
+        .get_user(&requested_id)
+        .await?
+        .ok_or_else(|| ApiError::NotFound("User not found".to_string()))?;
+    
+    Ok(HttpResponse::Ok().json(user))
+}
+```
+
+## HTTP Status Codes
+
+Return appropriate status codes based on the operation:
+
+```rust
+// 200 OK - Successful GET, PUT
+HttpResponse::Ok().json(data)
+
+// 201 Created - Successful POST
+HttpResponse::Created().json(data)
+
+// 204 No Content - Successful DELETE
+HttpResponse::NoContent().finish()
+
+// 400 Bad Request - Validation error (automatic with ValidatedJson)
+Err(ApiError::ValidationError(msg))
+
+// 401 Unauthorized - Missing/invalid authentication
+Err(ApiError::Unauthorized)
+
+// 403 Forbidden - Insufficient permissions
+Err(ApiError::Forbidden(msg))
+
+// 404 Not Found - Resource doesn't exist
+Err(ApiError::NotFound(msg))
+
+// 409 Conflict - Business rule violation
+Err(ApiError::Conflict(msg))
+```
+
+## Service Injection
+
+Services are injected via Actix's dependency injection:
+
+```rust
+pub async fn create(
+    service: web::Data<Arc<TestItemService>>,  // Injected service
+    req: ValidatedJson<CreateTestItemRequest>,
+) -> ApiResult<HttpResponse> {
+    // Call service methods
+    let item = service.create(req.0).await?;
+    Ok(HttpResponse::Created().json(item))
+}
+```
+
+<Note>
+Services must be registered in your application state during setup. See [Services](/core-concepts/services) for configuration details.
+</Note>
+
+## Error Handling
+
+The `?` operator automatically converts errors to HTTP responses:
+
+```rust src/infrastructure/http/controllers/test_item_controller.rs
+pub async fn update(
+    service: web::Data<Arc<TestItemService>>,
+    id: web::Path<String>,
+    req: ValidatedJson<UpdateTestItemRequest>,
+) -> ApiResult<HttpResponse> {
+    let item = service.update(&id.into_inner(), req.0).await?;
+    Ok(HttpResponse::Ok().json(item))
+}
+```
+
+If `service.update()` returns an error, it's automatically converted to the appropriate HTTP response.
+
+## Complete CRUD Controller Example
+
+```rust src/infrastructure/http/controllers/test_item_controller.rs
+use actix_web::{web, HttpResponse};
+use std::sync::Arc;
+
+use crate::application::dtos::{CreateTestItemRequest, UpdateTestItemRequest};
+use crate::application::services::TestItemService;
+use crate::errors::{ApiError, ApiResult};
+use crate::shared::ValidatedJson;
+
+pub struct TestItemController;
+
+impl TestItemController {
+    /// Create new test item
+    pub async fn create(
+        service: web::Data<Arc<TestItemService>>,
+        req: ValidatedJson<CreateTestItemRequest>,
+    ) -> ApiResult<HttpResponse> {
+        let item = service.create(req.0).await?;
+        Ok(HttpResponse::Created().json(item))
+    }
+
+    /// Get all test items with pagination
+    pub async fn get_all(
+        service: web::Data<Arc<TestItemService>>,
+        query: web::Query<PaginationQuery>,
+    ) -> ApiResult<HttpResponse> {
+        let page = query.page.unwrap_or(1);
+        let per_page = query.per_page.unwrap_or(20).min(100);
+
+        let response = service.get_all(page, per_page).await?;
+        Ok(HttpResponse::Ok().json(response))
+    }
+
+    /// Get test item by ID
+    pub async fn get_by_id(
+        service: web::Data<Arc<TestItemService>>,
+        id: web::Path<String>,
+    ) -> ApiResult<HttpResponse> {
+        let item = service.get_by_id(&id.into_inner()).await?
+            .ok_or_else(|| ApiError::NotFound("Test item not found".to_string()))?;
+
+        Ok(HttpResponse::Ok().json(item))
+    }
+
+    /// Update test item
+    pub async fn update(
+        service: web::Data<Arc<TestItemService>>,
+        id: web::Path<String>,
+        req: ValidatedJson<UpdateTestItemRequest>,
+    ) -> ApiResult<HttpResponse> {
+        let item = service.update(&id.into_inner(), req.0).await?;
+        Ok(HttpResponse::Ok().json(item))
+    }
+
+    /// Delete test item
+    pub async fn delete(
+        service: web::Data<Arc<TestItemService>>,
+        id: web::Path<String>,
+    ) -> ApiResult<HttpResponse> {
+        service.delete(&id.into_inner()).await?;
+        Ok(HttpResponse::NoContent()).finish()
+    }
+}
+```
+
+## Best Practices
+
+<Tip>
+- **Keep controllers thin** - Business logic belongs in services
+- **Use extractors** - Leverage Actix's type-safe extractors
+- **Validate early** - Use `ValidatedJson` for automatic DTO validation
+- **Return proper status codes** - Use semantically correct HTTP codes
+- **Handle errors gracefully** - Let the error handling system convert errors to responses
+</Tip>
+
+## Next Steps
+
+- Learn about [Services](/core-concepts/services) for business logic
+- Understand [DTOs](/core-concepts/dtos) for request/response validation
+- Explore [authentication](/security/authentication) extractors

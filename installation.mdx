@@ -1,0 +1,308 @@
+---
+title: Installation
+description: Install and set up the Rust Ironclad framework for your project
+---
+
+Get started with Rust Ironclad by installing the required dependencies and configuring your development environment.
+
+## Prerequisites
+
+Before you begin, ensure you have the following installed on your system:
+
+- **Rust 1.70+** - The Rust programming language and toolchain
+- **PostgreSQL 12+** - Primary database system
+- **sqlx-cli** - Database migration tool for SQLx
+
+<Note>
+  Ironclad uses PostgreSQL as its primary database. MongoDB support is optional and can be configured separately.
+</Note>
+
+## Installing Rust
+
+If you don't have Rust installed, download and install it using rustup:
+
+<Steps>
+  <Step title="Download rustup">
+    Visit [rustup.rs](https://rustup.rs/) or run the following command:
+    
+    ```bash
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    ```
+  </Step>
+  
+  <Step title="Verify installation">
+    After installation, verify Rust is installed correctly:
+    
+    ```bash
+    rustc --version
+    cargo --version
+    ```
+    
+    You should see version 1.70 or higher.
+  </Step>
+</Steps>
+
+## Installing PostgreSQL
+
+Install PostgreSQL 12 or higher for your operating system:
+
+<CodeGroup>
+```bash macOS (Homebrew)
+brew install postgresql@15
+brew services start postgresql@15
+```
+
+```bash Ubuntu/Debian
+sudo apt update
+sudo apt install postgresql postgresql-contrib
+sudo systemctl start postgresql
+```
+
+```bash Windows
+# Download installer from https://www.postgresql.org/download/windows/
+# Run the installer and follow the setup wizard
+```
+</CodeGroup>
+
+## Installing SQLx CLI
+
+The SQLx CLI tool is required for running database migrations:
+
+```bash
+cargo install sqlx-cli --no-default-features --features postgres
+```
+
+<Note>
+  The `--features postgres` flag installs only PostgreSQL support. You can add other databases if needed.
+</Note>
+
+## Project Setup
+
+<Steps>
+  <Step title="Clone the repository">
+    Clone the Ironclad framework to your local machine:
+    
+    ```bash
+    git clone <repository-url>
+    cd ironclad
+    ```
+  </Step>
+  
+  <Step title="Configure environment variables">
+    Copy the example environment file and configure your settings:
+    
+    ```bash
+    cp .env.example .env
+    ```
+    
+    Edit the `.env` file with your configuration:
+    
+    ```env .env
+    # Server Configuration
+    SERVER_HOST=127.0.0.1
+    SERVER_PORT=8080
+    ENVIRONMENT=development
+    
+    # PostgreSQL Database
+    DATABASE_URL=postgresql://postgres:password@localhost:5432/template_db
+    DB_MAX_CONNECTIONS=5
+    
+    # Bcrypt Configuration
+    BCRYPT_COST=12
+    
+    # JWT Configuration
+    JWT_SECRET=your-super-secret-key-change-this-in-production-12345
+    JWT_EXPIRATION=86400
+    ```
+  </Step>
+  
+  <Step title="Create the database">
+    Create your PostgreSQL database:
+    
+    ```bash
+    createdb template_db
+    ```
+    
+    Or using psql:
+    
+    ```bash
+    psql -U postgres -c "CREATE DATABASE template_db;"
+    ```
+  </Step>
+  
+  <Step title="Run database migrations">
+    Apply the database schema using SQLx migrations:
+    
+    ```bash
+    sqlx migrate run
+    ```
+    
+    This will create the necessary tables including users, roles, and test items.
+  </Step>
+  
+  <Step title="Build and run the server">
+    Start the development server:
+    
+    ```bash
+    cargo run
+    ```
+    
+    For a production-optimized build:
+    
+    ```bash
+    cargo build --release
+    ./target/release/ironclad
+    ```
+  </Step>
+</Steps>
+
+## Verify Installation
+
+Once the server is running, you should see output similar to:
+
+```bash
+╔════════════════════════════════════════════════════╗
+║    🚀 Rust Ironclad Framework (DDD Architecture)  ║
+╚════════════════════════════════════════════════════╝
+📍 Server: http://127.0.0.1:8080
+✅ PostgreSQL connected
+🌐 Listening on http://127.0.0.1:8080
+🔗 Documentation: http://127.0.0.1:8080/api/docs
+```
+
+Test the installation by accessing the health check endpoint:
+
+```bash
+curl http://127.0.0.1:8080/api/administration/health
+```
+
+## Optional: MongoDB Setup
+
+If you want to use MongoDB alongside PostgreSQL:
+
+<Steps>
+  <Step title="Install MongoDB">
+    Install MongoDB following the [official instructions](https://www.mongodb.com/docs/manual/installation/).
+  </Step>
+  
+  <Step title="Configure MongoDB">
+    Uncomment and configure the MongoDB settings in your `.env` file:
+    
+    ```env .env
+    # MongoDB Configuration (Optional)
+    MONGODB_URL=mongodb://localhost:27017
+    MONGODB_NAME=template_db
+    ```
+  </Step>
+  
+  <Step title="Restart the server">
+    Restart your Ironclad server to connect to MongoDB:
+    
+    ```bash
+    cargo run
+    ```
+    
+    You should see:
+    ```
+    ✅ MongoDB connected
+    ```
+  </Step>
+</Steps>
+
+## Configuration Reference
+
+### Server Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SERVER_HOST` | `127.0.0.1` | Server bind address |
+| `SERVER_PORT` | `8080` | Server port |
+| `ENVIRONMENT` | `development` | Environment mode (development/production) |
+
+### Database Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | - | PostgreSQL connection string |
+| `DB_MAX_CONNECTIONS` | `5` | Maximum database connections in pool |
+
+### Security Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BCRYPT_COST` | `12` | Bcrypt hashing cost (4-31) |
+| `JWT_SECRET` | - | Secret key for JWT token signing |
+| `JWT_EXPIRATION` | `86400` | Token expiration time in seconds (24 hours) |
+
+<Warning>
+  **Production Security**: Always change the `JWT_SECRET` in production. Use a strong, randomly generated secret key. Never commit real secrets to version control.
+</Warning>
+
+<Note>
+  **Bcrypt Cost**: The default cost of 12 provides good security. Lower values (4-8) should only be used for local testing as they are insecure. Higher values increase CPU load significantly.
+</Note>
+
+## Common Development Commands
+
+Here are some useful commands for development:
+
+```bash
+# Check code without building
+cargo check
+
+# Run with debug logging
+RUST_LOG=debug cargo run
+
+# Format code
+cargo fmt
+
+# Run linter
+cargo clippy
+
+# Run tests
+cargo test
+
+# Build optimized release binary
+cargo build --release
+```
+
+## Troubleshooting
+
+### Database Connection Failed
+
+If you see database connection errors:
+
+1. Verify PostgreSQL is running: `pg_isready`
+2. Check your `DATABASE_URL` in `.env`
+3. Ensure the database exists: `psql -l`
+4. Test the connection: `cargo run --bin ironclad -- db-check`
+
+### Port Already in Use
+
+If port 8080 is already in use, change `SERVER_PORT` in your `.env` file:
+
+```env
+SERVER_PORT=3000
+```
+
+### Migration Errors
+
+If migrations fail:
+
+```bash
+# Check migration status
+sqlx migrate info
+
+# Revert last migration
+sqlx migrate revert
+
+# Re-run migrations
+sqlx migrate run
+```
+
+## Next Steps
+
+Now that you have Ironclad installed, you're ready to build your first endpoint:
+
+- [Quick Start Tutorial](/quickstart) - Build your first API endpoint
+- [Project Structure](/project-structure) - Understand the codebase organization

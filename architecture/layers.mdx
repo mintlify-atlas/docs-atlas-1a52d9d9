@@ -1,0 +1,622 @@
+---
+title: The Five Layers
+description: Detailed explanation of each architectural layer in Ironclad
+icon: layer-group
+---
+
+## Layer Architecture
+
+Ironclad's architecture consists of five distinct layers, each with specific responsibilities. Dependencies flow in one direction: **outward layers depend on inner layers, never the reverse**.
+
+```
+┌─────────────────────────────────────┐
+│  1. Routes Layer                    │ ← HTTP Routing Configuration
+├─────────────────────────────────────┤
+│  2. Infrastructure Layer            │ ← Controllers, HTTP, Persistence
+├─────────────────────────────────────┤
+│  3. Application Layer               │ ← Services, DTOs, Use Cases
+├─────────────────────────────────────┤
+│  4. Domain Layer                    │ ← Entities, Value Objects, Business Logic
+├─────────────────────────────────────┤
+│  5. Interfaces Layer                │ ← Repository Traits, Contracts
+└─────────────────────────────────────┘
+```
+
+## Layer 1: Routes Layer
+
+**Purpose:** Define HTTP routing and map URLs to controllers
+
+**Location:** `src/routes/`
+
+**Responsibilities:**
+- Define URL patterns and HTTP methods
+- Map routes to controller handlers
+- Apply middleware and guards at the route level
+- Configure route-level rate limiting
+
+### Example
+
+```rust src/routes/api.rs
+use actix_web::web;
+use crate::infrastructure::http::{AuthController, UserController, TestItemController};
+
+pub fn configure(cfg: &mut web::ServiceConfig) {
+    cfg.service(
+        web::scope("/api")
+            // Authentication routes
+            .service(
+                web::scope("/auth")
+                    .route("/register", web::post().to(AuthController::register))
+                    .route("/login", web::post().to(AuthController::login))
+                    .route("/verify-admin", web::get().to(AuthController::verify_admin))
+            )
+            // User routes
+            .service(
+                web::scope("/user")
+                    .route("/profile", web::get().to(UserController::get_profile))
+                    .route("/all", web::get().to(UserController::get_all_users))
+                    .route("/{id}", web::get().to(UserController::get_user))
+            )
+            // Public routes (no authentication)
+            .service(
+                web::scope("/noauth")
+                    .route("/users", web::get().to(UserController::get_all_users_no_session))
+            )
+            // Test items CRUD
+            .service(
+                web::scope("/test-items")
+                    .route("", web::post().to(TestItemController::create))
+                    .route("", web::get().to(TestItemController::get_all))
+                    .route("/{id}", web::get().to(TestItemController::get_by_id))
+                    .route("/{id}", web::put().to(TestItemController::update))
+                    .route("/{id}", web::delete().to(TestItemController::delete))
+            )
+    );
+}
+```
+
+<Info>
+  Routes should be **declarative** - just mapping URLs to handlers. No business logic here!
+</Info>
+
+---
+
+## Layer 2: Infrastructure Layer
+
+**Purpose:** Handle external concerns (HTTP, database, third-party services)
+
+**Location:** `src/infrastructure/`
+
+**Responsibilities:**
+- HTTP controllers (request/response handling)
+- Database repository implementations
+- Authentication extractors
+- External API integrations
+- File storage, caching, etc.
+
+### Structure
+
+```
+src/infrastructure/
+├── http/
+│   ├── controllers/          # HTTP request handlers
+│   │   ├── auth_controller.rs
+│   │   ├── user_controller.rs
+│   │   └── test_item_controller.rs
+│   └── authentication.rs     # JWT extractors, auth guards
+└── persistence/
+    └── postgres/             # Database implementations
+        ├── user_repository.rs
+        └── test_item_repository.rs
+```
+
+### Example: Controller
+
+```rust src/infrastructure/http/controllers/auth_controller.rs
+use actix_web::{web, HttpResponse};
+use std::sync::Arc;
+use crate::application::dtos::{LoginRequest, RegisterUserRequest};
+use crate::application::services::AuthService;
+use crate::errors::ApiResult;
+use crate::shared::ValidatedJson;
+
+pub struct AuthController;
+
+impl AuthController {
+    /// Register with automatic validation
+    pub async fn register(
+        service: web::Data<Arc<AuthService>>,
+        req: ValidatedJson<RegisterUserRequest>,
+    ) -> ApiResult<HttpResponse> {
+        let response = service.register(req.0).await?;
+        Ok(HttpResponse::Created().json(response))
+    }
+
+    /// Login with automatic validation
+    pub async fn login(
+        service: web::Data<Arc<AuthService>>,
+        req: ValidatedJson<LoginRequest>,
+    ) -> ApiResult<HttpResponse> {
+        let response = service.login(req.0).await?;
+        Ok(HttpResponse::Ok().json(response))
+    }
+}
+```
+
+<Tip>
+  Controllers are **thin** - they just extract data from HTTP requests, call services, and format responses. No business logic!
+</Tip>
+
+### Example: Repository Implementation
+
+```rust src/infrastructure/persistence/postgres/user_repository.rs
+use sqlx::PgPool;
+use async_trait::async_trait;
+use crate::domain::entities::User;
+use crate::errors::ApiError;
+use crate::interfaces::repositories::UserRepository;
+
+pub struct PostgresUserRepository {
+    pool: PgPool,
+}
+
+impl PostgresUserRepository {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl UserRepository for PostgresUserRepository {
+    async fn create(&self, user: &User) -> Result<User, ApiError> {
+        let query = r#"
+            INSERT INTO users (id, email, username, password_hash, role, is_active, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            RETURNING *
+        "#;
+        
+        let created_user = sqlx::query_as::<_, User>(query)
+            .bind(&user.id)
+            .bind(user.email.as_str())  // Extract primitive from Value Object
+            .bind(user.username.as_str())
+            .bind(&user.password_hash)
+            .bind(user.role.as_str())
+            .bind(user.is_active)
+            .bind(user.created_at)
+            .bind(user.updated_at)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| ApiError::DatabaseError(e.to_string()))?;
+
+        Ok(created_user)
+    }
+
+    async fn get_by_email(&self, email: &str) -> Result<Option<User>, ApiError> {
+        let query = "SELECT * FROM users WHERE email = $1";
+        
+        let user = sqlx::query_as::<_, User>(query)
+            .bind(email)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| ApiError::DatabaseError(e.to_string()))?;
+
+        Ok(user)
+    }
+}
+```
+
+---
+
+## Layer 3: Application Layer
+
+**Purpose:** Orchestrate business logic and define use cases
+
+**Location:** `src/application/`
+
+**Responsibilities:**
+- Coordinate multiple domain operations
+- Handle I/O-dependent validation (e.g., uniqueness checks)
+- Transform DTOs to domain objects
+- Transaction management
+- Service composition
+
+### Structure
+
+```
+src/application/
+├── services/                 # Business workflows
+│   ├── auth_service.rs
+│   ├── user_service.rs
+│   └── test_item_service.rs
+└── dtos/                     # Data Transfer Objects
+    ├── auth_dto.rs
+    └── test_item_dto.rs
+```
+
+### Example: Service
+
+```rust src/application/services/auth_service.rs
+use std::sync::Arc;
+use crate::application::dtos::{AuthResponse, LoginRequest, RegisterUserRequest};
+use crate::config::AppConfig;
+use crate::domain::entities::User;
+use crate::domain::value_objects::{EmailAddress, Username};
+use crate::errors::ApiError;
+use crate::interfaces::UserRepository;
+use crate::utils::auth::hash_password;
+use crate::utils::jwt::create_token;
+
+pub struct AuthService {
+    user_repository: Arc<dyn UserRepository>,
+    config: Arc<AppConfig>,
+}
+
+impl AuthService {
+    pub fn new(user_repository: Arc<dyn UserRepository>, config: Arc<AppConfig>) -> Self {
+        Self { user_repository, config }
+    }
+
+    /// Register new user
+    pub async fn register(&self, request: RegisterUserRequest) -> Result<AuthResponse, ApiError> {
+        // 1. I/O-dependent business rule: Check uniqueness
+        if self.user_repository.exists_by_email(&request.email).await? {
+            return Err(ApiError::Conflict("User already exists".to_string()));
+        }
+        
+        // 2. Create Value Objects (Domain validation happens here)
+        let email_vo = EmailAddress::new(request.email)?;
+        let username_vo = Username::new(request.username)?;
+        
+        // 3. Hash password
+        let password_hash = hash_password(&request.password, &self.config)?;
+        
+        // 4. Create entity
+        let user = User::new(email_vo, username_vo, password_hash)?;
+        
+        // 5. Persist
+        let created_user = self.user_repository.create(&user).await?;
+        
+        // 6. Generate JWT token
+        let token = create_token(
+            &created_user.id,
+            created_user.email.as_str(),
+            &created_user.role.to_string(),
+            &self.config,
+        )?;
+        
+        Ok(AuthResponse {
+            user: created_user.to_response(),
+            token,
+        })
+    }
+
+    /// Login user
+    pub async fn login(&self, request: LoginRequest) -> Result<AuthResponse, ApiError> {
+        // 1. Find user
+        let user = self
+            .user_repository
+            .get_by_email(&request.email)
+            .await?
+            .ok_or(ApiError::Unauthorized)?;
+
+        // 2. Check if active
+        if !user.is_active() {
+            return Err(ApiError::Forbidden("Account is disabled".to_string()));
+        }
+
+        // 3. Verify password
+        if !crate::utils::auth::verify_password(&request.password, &user.password_hash)? {
+            return Err(ApiError::Unauthorized);
+        }
+
+        // 4. Generate token
+        let token = create_token(
+            &user.id,
+            user.email.as_str(),
+            &user.role.to_string(),
+            &self.config,
+        )?;
+
+        Ok(AuthResponse {
+            user: user.to_response(),
+            token,
+        })
+    }
+}
+```
+
+### Example: DTOs
+
+```rust src/application/dtos/auth_dto.rs
+use serde::{Deserialize, Serialize};
+use validator::Validate;
+
+#[derive(Debug, Deserialize, Validate)]
+pub struct RegisterUserRequest {
+    #[validate(email(message = "Invalid email format"))]
+    pub email: String,
+    
+    #[validate(length(min = 3, max = 50, message = "Username must be 3-50 characters"))]
+    pub username: String,
+    
+    #[validate(length(min = 8, message = "Password must be at least 8 characters"))]
+    pub password: String,
+}
+
+#[derive(Debug, Deserialize, Validate)]
+pub struct LoginRequest {
+    #[validate(email)]
+    pub email: String,
+    
+    #[validate(length(min = 1))]
+    pub password: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AuthResponse {
+    pub user: UserResponse,
+    pub token: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UserResponse {
+    pub id: String,
+    pub email: String,
+    pub username: String,
+    pub role: String,
+    pub is_active: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+```
+
+<Note>
+  Services orchestrate workflows. They coordinate domain objects, repositories, and external services to fulfill use cases.
+</Note>
+
+---
+
+## Layer 4: Domain Layer
+
+**Purpose:** Core business logic with no external dependencies
+
+**Location:** `src/domain/`
+
+**Responsibilities:**
+- Define entities and value objects
+- Implement business rules
+- Encapsulate domain invariants
+- Pure functions with no I/O
+
+### Structure
+
+```
+src/domain/
+├── entities/                # Business objects with identity
+│   ├── user.rs
+│   └── test_item.rs
+└── value_objects/           # Immutable concepts
+    ├── email_address.rs
+    ├── username.rs
+    └── role.rs
+```
+
+### Example: Entity
+
+```rust src/domain/entities/user.rs
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+use crate::domain::value_objects::{Role, Username, EmailAddress};
+use crate::errors::DomainError;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct User {
+    pub id: String,
+    pub email: EmailAddress,
+    pub username: Username,
+    pub password_hash: String,
+    pub role: Role,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl User {
+    /// Smart Constructor: Returns Result guaranteeing a valid state
+    pub fn new(
+        email: EmailAddress,
+        username: Username,
+        password_hash: String,
+    ) -> Result<Self, DomainError> {
+        let now = Utc::now();
+        Ok(Self {
+            id: Uuid::new_v4().to_string(),
+            email,
+            username,
+            password_hash,
+            role: Role::default(),
+            is_active: true,
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    // ============================================
+    // Business Logic Methods
+    // ============================================
+
+    pub fn is_admin(&self) -> bool {
+        self.role.is_admin()
+    }
+
+    pub fn can_moderate(&self) -> bool {
+        self.role.can_moderate()
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.is_active
+    }
+
+    // ============================================
+    // Mutation Methods (Update timestamp)
+    // ============================================
+
+    pub fn update_email(&mut self, email: EmailAddress) {
+        self.email = email;
+        self.updated_at = Utc::now();
+    }
+
+    pub fn activate(&mut self) {
+        self.is_active = true;
+        self.updated_at = Utc::now();
+    }
+
+    pub fn deactivate(&mut self) {
+        self.is_active = false;
+        self.updated_at = Utc::now();
+    }
+
+    pub fn change_role(&mut self, role: Role) {
+        self.role = role;
+        self.updated_at = Utc::now();
+    }
+}
+```
+
+### Example: Value Object
+
+See the [Domain-Driven Design page](/architecture/domain-driven-design) for detailed Value Object examples.
+
+<Warning>
+  The Domain layer must have **zero external dependencies**. No database, HTTP, or framework code!
+</Warning>
+
+---
+
+## Layer 5: Interfaces Layer
+
+**Purpose:** Define contracts for data access and external services
+
+**Location:** `src/interfaces/`
+
+**Responsibilities:**
+- Repository trait definitions
+- Service interface contracts
+- Abstraction boundaries
+
+### Structure
+
+```
+src/interfaces/
+└── repositories/
+    ├── user_repository.rs
+    └── test_item_repository.rs
+```
+
+### Example: Repository Trait
+
+```rust src/interfaces/repositories/user_repository.rs
+use crate::domain::entities::User;
+use crate::errors::ApiError;
+use async_trait::async_trait;
+
+/// User Repository - Data access contract
+#[async_trait]
+pub trait UserRepository: Send + Sync {
+    /// Create new user
+    async fn create(&self, user: &User) -> Result<User, ApiError>;
+
+    /// Get user by ID
+    async fn get_by_id(&self, id: &str) -> Result<Option<User>, ApiError>;
+
+    /// Get user by email
+    async fn get_by_email(&self, email: &str) -> Result<Option<User>, ApiError>;
+
+    /// Get all users
+    async fn get_all(&self) -> Result<Vec<User>, ApiError>;
+
+    /// Get users with pagination
+    async fn get_paginated(&self, page: i32, per_page: i32) -> Result<(Vec<User>, i32), ApiError>;
+
+    /// Update user
+    async fn update(&self, user: &User) -> Result<(), ApiError>;
+
+    /// Delete user by ID
+    async fn delete(&self, id: &str) -> Result<bool, ApiError>;
+
+    /// Count total users
+    async fn count(&self) -> Result<i32, ApiError>;
+
+    /// Check if user exists with this email
+    async fn exists_by_email(&self, email: &str) -> Result<bool, ApiError>;
+}
+```
+
+<Tip>
+  Interfaces enable **dependency inversion**. High-level modules (services) depend on abstractions (traits), not concrete implementations.
+</Tip>
+
+---
+
+## Dependency Flow
+
+Dependencies flow **inward**, toward the domain:
+
+```
+Routes → Infrastructure → Application → Domain ← Interfaces
+                                           ↑
+                                      (implements)
+                                           |
+                                   Infrastructure
+```
+
+- **Routes** depend on **Infrastructure** (controllers)
+- **Infrastructure** depends on **Application** (services) and **Interfaces** (traits)
+- **Application** depends on **Domain** and **Interfaces**
+- **Domain** has **zero external dependencies**
+- **Interfaces** define contracts that **Infrastructure** implements
+
+<Info>
+  This is the **Dependency Inversion Principle** from SOLID: high-level modules don't depend on low-level modules; both depend on abstractions.
+</Info>
+
+## Benefits of Layered Architecture
+
+<AccordionGroup>
+  <Accordion title="Testability">
+    Each layer can be tested independently:
+    - Mock repositories for service tests
+    - Test domain logic without database
+    - Integration tests at controller level
+  </Accordion>
+  <Accordion title="Maintainability">
+    Changes are localized:
+    - Switch databases? Only change Infrastructure layer
+    - New business rule? Only touch Domain/Application
+    - API changes? Only modify Controllers/DTOs
+  </Accordion>
+  <Accordion title="Scalability">
+    Add features without breaking existing code:
+    - New entity? Add to Domain
+    - New endpoint? Add route + controller
+    - New data source? Implement repository trait
+  </Accordion>
+  <Accordion title="Clear Ownership">
+    Each layer has a clear purpose:
+    - Domain = "What is the business logic?"
+    - Application = "How do we orchestrate it?"
+    - Infrastructure = "How do we interact with external systems?"
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Dependency Injection" icon="plug" href="/architecture/dependency-injection">
+    Learn how layers are wired together
+  </Card>
+  <Card title="DDD Principles" icon="brain" href="/architecture/domain-driven-design">
+    Deep dive into Value Objects and patterns
+  </Card>
+</CardGroup>

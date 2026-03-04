@@ -1,0 +1,421 @@
+---
+title: 'Application Layer'
+description: 'Services and DTOs for business logic orchestration'
+icon: 'gears'
+---
+
+The application layer orchestrates business logic by coordinating between domain entities and infrastructure. It contains services that implement use cases and DTOs for data transfer.
+
+## Services
+
+Services encapsulate application logic and coordinate domain operations with infrastructure concerns.
+
+### AuthService
+
+Handles user authentication and registration with password hashing and JWT token generation.
+
+<ParamField path="AuthService" type="struct">
+  Authentication service with user repository and configuration dependencies.
+</ParamField>
+
+#### Constructor
+
+```rust
+pub fn new(
+    user_repository: Arc<dyn UserRepository>, 
+    config: Arc<AppConfig>
+) -> Self
+```
+
+<ParamField path="user_repository" type="Arc<dyn UserRepository>">
+  Repository trait for user data access
+</ParamField>
+
+<ParamField path="config" type="Arc<AppConfig>">
+  Application configuration including JWT settings
+</ParamField>
+
+#### Methods
+
+**register**
+
+```rust
+pub async fn register(
+    &self, 
+    request: RegisterUserRequest
+) -> Result<AuthResponse, ApiError>
+```
+
+Registers a new user with validation:
+1. Validates password strength
+2. Checks email uniqueness
+3. Creates value objects (EmailAddress, Username)
+4. Hashes password
+5. Creates and persists User entity
+6. Generates JWT token
+
+<ParamField path="request" type="RegisterUserRequest">
+  Contains email, username, and password fields
+</ParamField>
+
+<ResponseField name="AuthResponse" type="Result">
+  Returns user data and authentication token on success
+</ResponseField>
+
+**Example from source** (auth_service.rs:26-61):
+
+```rust
+let email_vo = EmailAddress::new(request.email)?;
+let username_vo = Username::new(request.username)?;
+let password_hash = hash_password(&request.password, &self.config)?;
+let user = User::new(email_vo, username_vo, password_hash)?;
+let created_user = self.user_repository.create(&user).await?;
+```
+
+**login**
+
+```rust
+pub async fn login(
+    &self, 
+    request: LoginRequest
+) -> Result<AuthResponse, ApiError>
+```
+
+Authenticates existing user:
+1. Retrieves user by email
+2. Checks if account is active
+3. Verifies password hash
+4. Generates JWT token
+
+<ParamField path="request" type="LoginRequest">
+  Contains email and password for authentication
+</ParamField>
+
+<ResponseField name="AuthResponse" type="Result">
+  Returns user data and authentication token on success
+</ResponseField>
+
+---
+
+### UserService
+
+Manages user profile operations, role management, and user lifecycle.
+
+<ParamField path="UserService" type="struct">
+  User management service with repository and configuration dependencies.
+</ParamField>
+
+#### Constructor
+
+```rust
+pub fn new(
+    user_repository: Arc<dyn UserRepository>,
+    config: Arc<AppConfig>
+) -> Self
+```
+
+#### Methods
+
+**get_user**
+
+```rust
+pub async fn get_user(
+    &self, 
+    user_id: &str
+) -> Result<Option<UserResponse>, ApiError>
+```
+
+Retrieves user by ID and converts to response DTO.
+
+**get_all_users**
+
+```rust
+pub async fn get_all_users(
+    &self,
+    page: i32,
+    per_page: i32
+) -> Result<PaginatedResponse<UserResponse>, ApiError>
+```
+
+Retrieves paginated list of users with validation:
+- Page must be greater than 0
+- Per page must be between 1 and 100
+
+**update_profile**
+
+```rust
+pub async fn update_profile(
+    &self,
+    user_id: &str,
+    request: UpdateProfileRequest
+) -> Result<UserResponse, ApiError>
+```
+
+Updates user profile with value object validation:
+1. Validates username format if provided
+2. Checks email uniqueness if changed
+3. Validates password strength if changed
+4. Updates entity and persists
+
+**Example from source** (user_service.rs:84-103):
+
+```rust
+if let Some(username_str) = request.username {
+    let username_vo = Username::new(username_str)?; 
+    user.update_username(username_vo);
+}
+
+if let Some(email_str) = request.email {
+    if let Some(existing_user) = self.user_repository.get_by_email(&email_str).await? {
+        if existing_user.id != user_id {
+            return Err(ApiError::Conflict("Email is already in use".to_string()));
+        }
+    }
+    let email_vo = EmailAddress::new(email_str)?;
+    user.update_email(email_vo);
+}
+```
+
+**activate_user / deactivate_user**
+
+```rust
+pub async fn activate_user(&self, user_id: &str) -> Result<(), ApiError>
+pub async fn deactivate_user(&self, user_id: &str) -> Result<(), ApiError>
+```
+
+Toggles user account status with validation to prevent redundant operations.
+
+**delete_user**
+
+```rust
+pub async fn delete_user(&self, user_id: &str) -> Result<(), ApiError>
+```
+
+Permanently removes user from system.
+
+**get_user_count**
+
+```rust
+pub async fn get_user_count(&self) -> Result<i32, ApiError>
+```
+
+Returns total number of users in system.
+
+---
+
+### TestItemService
+
+Manages CRUD operations for test items with pagination support.
+
+<ParamField path="TestItemService" type="struct">
+  Service for test item operations with repository dependency.
+</ParamField>
+
+#### Constructor
+
+```rust
+pub fn new(repository: Arc<dyn TestItemRepository>) -> Self
+```
+
+#### Methods
+
+**create**
+
+```rust
+pub async fn create(
+    &self, 
+    request: CreateTestItemRequest
+) -> Result<TestItemResponse, ApiError>
+```
+
+Creates new test item entity and persists it.
+
+**get_by_id**
+
+```rust
+pub async fn get_by_id(
+    &self, 
+    id: &str
+) -> Result<Option<TestItemResponse>, ApiError>
+```
+
+Retrieves test item by ID.
+
+**get_all**
+
+```rust
+pub async fn get_all(
+    &self, 
+    page: i32, 
+    per_page: i32
+) -> Result<PaginatedTestItemsResponse, ApiError>
+```
+
+Retrieves paginated test items with validation (page >= 1, per_page 1-100).
+
+**update**
+
+```rust
+pub async fn update(
+    &self,
+    id: &str,
+    request: UpdateTestItemRequest
+) -> Result<TestItemResponse, ApiError>
+```
+
+Updates test item fields selectively based on provided values.
+
+**delete**
+
+```rust
+pub async fn delete(&self, id: &str) -> Result<(), ApiError>
+```
+
+Deletes test item, returns NotFound error if item doesn't exist.
+
+---
+
+## Data Transfer Objects (DTOs)
+
+DTOs define the shape of data transferred between layers with validation rules.
+
+### Authentication DTOs
+
+**RegisterUserRequest**
+
+```rust
+pub struct RegisterUserRequest {
+    #[validate(email(message = "Invalid email format"))]
+    pub email: String,
+    
+    #[validate(length(min = 3, max = 50))]
+    pub username: String,
+    
+    #[validate(length(min = 8))]
+    pub password: String,
+}
+```
+
+**LoginRequest**
+
+```rust
+pub struct LoginRequest {
+    #[validate(email)]
+    pub email: String,
+    
+    #[validate(length(min = 1))]
+    pub password: String,
+}
+```
+
+**AuthResponse**
+
+```rust
+pub struct AuthResponse {
+    pub user: UserResponse,
+    pub token: String,
+}
+```
+
+### User DTOs
+
+**UpdateProfileRequest**
+
+```rust
+pub struct UpdateProfileRequest {
+    #[validate(length(min = 3, max = 50))]
+    pub username: Option<String>,
+    
+    #[validate(email)]
+    pub email: Option<String>,
+    
+    #[validate(length(min = 8))]
+    pub password: Option<String>,
+}
+```
+
+**UserResponse**
+
+```rust
+pub struct UserResponse {
+    pub id: String,
+    pub email: String,
+    pub username: String,
+    pub role: String,
+    pub is_active: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+```
+
+**PaginatedResponse&lt;T&gt;**
+
+```rust
+pub struct PaginatedResponse<T> {
+    pub data: Vec<T>,
+    pub total: i32,
+    pub page: i32,
+    pub per_page: i32,
+    pub total_pages: i32,
+}
+```
+
+Automatically calculates total_pages from total and per_page.
+
+### TestItem DTOs
+
+**CreateTestItemRequest**
+
+```rust
+pub struct CreateTestItemRequest {
+    #[validate(length(min = 1, max = 255))]
+    pub subject: String,
+    
+    #[validate(length(max = 1000))]
+    pub optional_field: Option<String>,
+}
+```
+
+**UpdateTestItemRequest**
+
+```rust
+pub struct UpdateTestItemRequest {
+    #[validate(length(min = 1, max = 255))]
+    pub subject: Option<String>,
+    
+    #[validate(length(max = 1000))]
+    pub optional_field: Option<String>,
+}
+```
+
+**TestItemResponse**
+
+```rust
+pub struct TestItemResponse {
+    pub id: String,
+    pub subject: String,
+    pub optional_field: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+```
+
+**PaginatedTestItemsResponse**
+
+```rust
+pub struct PaginatedTestItemsResponse {
+    pub data: Vec<TestItemResponse>,
+    pub total: i32,
+    pub page: i32,
+    pub per_page: i32,
+    pub total_pages: i32,
+}
+```
+
+---
+
+## Related Documentation
+
+- [Domain Layer](/api/domain) - Entities and value objects used by services
+- [Interfaces Layer](/api/interfaces) - Repository traits implemented by infrastructure
+- [Infrastructure Layer](/api/infrastructure) - Controllers and repository implementations

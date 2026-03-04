@@ -1,0 +1,485 @@
+---
+title: Data Transfer Objects
+description: Define and validate request/response DTOs in Ironclad
+---
+
+Data Transfer Objects (DTOs) define the structure and validation rules for data crossing application boundaries. They serve as the contract between your API and its clients.
+
+## DTO Purpose
+
+DTOs serve multiple critical functions:
+
+1. **Request validation** - Syntactic checks before business logic
+2. **API documentation** - Clear contracts for API consumers
+3. **Serialization** - Convert between JSON and Rust types
+4. **Separation of concerns** - Decouple API shape from domain models
+
+<Note>
+DTOs perform **syntactic validation only** (format, length, required fields). Business rules like "email already exists" belong in [Services](/core-concepts/services).
+</Note>
+
+## Request DTOs
+
+Request DTOs validate incoming data using the `validator` crate:
+
+```rust src/application/dtos/auth_dto.rs
+use serde::{Deserialize, Serialize};
+use validator::Validate;
+
+#[derive(Debug, Deserialize, Serialize, Validate)]
+pub struct RegisterUserRequest {
+    #[validate(email(message = "Invalid email format"))]
+    pub email: String,
+    
+    #[validate(length(min = 3, max = 50, message = "Username must be between 3 and 50 characters"))]
+    pub username: String,
+    
+    #[validate(length(min = 8, message = "Password must be at least 8 characters"))]
+    pub password: String,
+}
+```
+
+### Validation Attributes
+
+<ParamField path="email" type="validation">
+  Validates email format (contains @, proper structure).
+  ```rust
+  #[validate(email(message = "Invalid email format"))]
+  pub email: String,
+  ```
+</ParamField>
+
+<ParamField path="length" type="validation">
+  Validates string length constraints.
+  ```rust
+  #[validate(length(min = 3, max = 50, message = "Username must be between 3 and 50 characters"))]
+  pub username: String,
+  ```
+</ParamField>
+
+<ParamField path="range" type="validation">
+  Validates numeric ranges.
+  ```rust
+  #[validate(range(min = 18, max = 120, message = "Age must be between 18 and 120"))]
+  pub age: i32,
+  ```
+</ParamField>
+
+<ParamField path="url" type="validation">
+  Validates URL format.
+  ```rust
+  #[validate(url(message = "Invalid URL format"))]
+  pub website: String,
+  ```
+</ParamField>
+
+<ParamField path="custom" type="validation">
+  Custom validation function.
+  ```rust
+  #[validate(custom = "validate_username")]
+  pub username: String,
+  ```
+</ParamField>
+
+## Automatic Validation in Controllers
+
+Use `ValidatedJson` to automatically validate DTOs:
+
+```rust src/infrastructure/http/controllers/auth_controller.rs
+use crate::shared::ValidatedJson;
+
+pub async fn register(
+    service: web::Data<Arc<AuthService>>,
+    req: ValidatedJson<RegisterUserRequest>,
+) -> ApiResult<HttpResponse> {
+    let response = service.register(req.0).await?;
+    Ok(HttpResponse::Created().json(response))
+}
+```
+
+The `ValidatedJson` extractor:
+- Parses JSON from request body
+- Runs validation rules defined on DTO
+- Returns `400 Bad Request` if validation fails
+- Extracts validated DTO with `req.0`
+
+<Tip>
+Validation happens automatically before your controller logic runs. Invalid requests never reach your services.
+</Tip>
+
+## Optional Fields
+
+Handle optional updates with `Option<T>`:
+
+```rust src/application/dtos/auth_dto.rs
+#[derive(Debug, Deserialize, Serialize, Validate)]
+pub struct UpdateProfileRequest {
+    #[validate(length(min = 3, max = 50, message = "Username must be between 3 and 50 characters"))]
+    pub username: Option<String>,
+    
+    #[validate(email(message = "Invalid email format"))]
+    pub email: Option<String>,
+    
+    #[validate(length(min = 8, message = "Password must be at least 8 characters"))]
+    pub password: Option<String>,
+}
+```
+
+<Warning>
+Validation rules apply only when the field is `Some`. `None` values skip validation.
+</Warning>
+
+## Response DTOs
+
+Response DTOs define the shape of data returned to clients:
+
+```rust src/application/dtos/auth_dto.rs
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UserResponse {
+    pub id: String,
+    pub email: String,
+    pub username: String,
+    pub role: String,
+    pub is_active: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+```
+
+<Note>
+Response DTOs:
+- Use `Serialize` (not `Deserialize`)
+- Omit sensitive fields like `password_hash`
+- Convert complex types to simple types (e.g., `DateTime` → `String`)
+</Note>
+
+## Authentication Response
+
+Combine multiple DTOs for complex responses:
+
+```rust src/application/dtos/auth_dto.rs
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AuthResponse {
+    pub user: UserResponse,
+    pub token: String,
+}
+```
+
+This returns:
+```json
+{
+  "user": {
+    "id": "123",
+    "email": "user@example.com",
+    "username": "john",
+    "role": "user",
+    "is_active": true,
+    "created_at": "2024-01-01T00:00:00Z",
+    "updated_at": "2024-01-01T00:00:00Z"
+  },
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+```
+
+## Pagination DTOs
+
+Create reusable pagination response DTOs:
+
+```rust src/application/dtos/auth_dto.rs
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PaginatedResponse<T> {
+    pub data: Vec<T>,
+    pub total: i32,
+    pub page: i32,
+    pub per_page: i32,
+    pub total_pages: i32,
+}
+
+impl<T> PaginatedResponse<T> {
+    pub fn new(data: Vec<T>, total: i32, page: i32, per_page: i32) -> Self {
+        let total_pages = (total + per_page - 1) / per_page;
+        Self {
+            data,
+            total,
+            page,
+            per_page,
+            total_pages,
+        }
+    }
+}
+```
+
+Usage:
+```rust
+type PaginatedUsersResponse = PaginatedResponse<UserResponse>;
+```
+
+## CRUD DTOs Example
+
+```rust src/application/dtos/test_item_dto.rs
+use serde::{Deserialize, Serialize};
+use validator::Validate;
+
+/// DTO for creating a test item
+#[derive(Debug, Deserialize, Serialize, Validate)]
+pub struct CreateTestItemRequest {
+    #[validate(length(min = 1, max = 255, message = "Subject must be between 1 and 255 characters"))]
+    pub subject: String,
+    
+    #[validate(length(max = 1000, message = "Optional field cannot exceed 1000 characters"))]
+    pub optional_field: Option<String>,
+}
+
+/// DTO for updating a test item
+#[derive(Debug, Deserialize, Serialize, Validate)]
+pub struct UpdateTestItemRequest {
+    #[validate(length(min = 1, max = 255, message = "Subject must be between 1 and 255 characters"))]
+    pub subject: Option<String>,
+    
+    #[validate(length(max = 1000, message = "Optional field cannot exceed 1000 characters"))]
+    pub optional_field: Option<String>,
+}
+
+/// DTO for test item response
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TestItemResponse {
+    pub id: String,
+    pub subject: String,
+    pub optional_field: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// DTO for paginated response
+#[derive(Debug, Serialize, Deserialize)]
+pub struct PaginatedTestItemsResponse {
+    pub data: Vec<TestItemResponse>,
+    pub total: i32,
+    pub page: i32,
+    pub per_page: i32,
+    pub total_pages: i32,
+}
+
+impl PaginatedTestItemsResponse {
+    pub fn new(data: Vec<TestItemResponse>, total: i32, page: i32, per_page: i32) -> Self {
+        let total_pages = (total + per_page - 1) / per_page;
+        Self {
+            data,
+            total,
+            page,
+            per_page,
+            total_pages,
+        }
+    }
+}
+```
+
+## Entity to DTO Conversion
+
+Entities provide methods to convert to response DTOs:
+
+```rust src/domain/entities/test_item.rs
+impl TestItem {
+    pub fn to_response(&self) -> TestItemResponse {
+        TestItemResponse {
+            id: self.id.clone(),
+            subject: self.subject.clone(),
+            optional_field: self.optional_field.clone(),
+            created_at: self.created_at.to_rfc3339(),
+            updated_at: self.updated_at.to_rfc3339(),
+        }
+    }
+}
+```
+
+Usage in services:
+```rust
+pub async fn get_by_id(&self, id: &str) -> Result<Option<TestItemResponse>, ApiError> {
+    let item = self.repository.get_by_id(id).await?;
+    Ok(item.map(|i| i.to_response()))
+}
+```
+
+## Login DTO
+
+```rust src/application/dtos/auth_dto.rs
+#[derive(Debug, Deserialize, Serialize, Validate)]
+pub struct LoginRequest {
+    #[validate(email(message = "Invalid email format"))]
+    pub email: String,
+    
+    #[validate(length(min = 1, message = "Password is required"))]
+    pub password: String,
+}
+```
+
+## Role Update DTO
+
+```rust src/application/dtos/auth_dto.rs
+#[derive(Debug, Deserialize, Serialize, Validate)]
+pub struct UpdateRoleRequest {
+    #[validate(length(min = 1, message = "Role is required"))]
+    pub role: String,
+}
+```
+
+## Validation Error Response
+
+When validation fails, Ironclad returns a structured error:
+
+```json
+{
+  "error": "Validation failed",
+  "details": {
+    "email": ["Invalid email format"],
+    "username": ["Username must be between 3 and 50 characters"]
+  }
+}
+```
+
+## Custom Validation
+
+Implement custom validation logic:
+
+```rust
+use validator::ValidationError;
+
+fn validate_username(username: &str) -> Result<(), ValidationError> {
+    if username.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        Ok(())
+    } else {
+        Err(ValidationError::new("username_invalid"))
+    }
+}
+
+#[derive(Validate)]
+pub struct RegisterUserRequest {
+    #[validate(custom = "validate_username")]
+    pub username: String,
+}
+```
+
+## Nested Validation
+
+Validate nested structures:
+
+```rust
+#[derive(Debug, Deserialize, Validate)]
+pub struct CreateOrderRequest {
+    #[validate]
+    pub customer: CustomerInfo,
+    
+    #[validate]
+    pub items: Vec<OrderItem>,
+}
+
+#[derive(Debug, Deserialize, Validate)]
+pub struct CustomerInfo {
+    #[validate(length(min = 1))]
+    pub name: String,
+    
+    #[validate(email)]
+    pub email: String,
+}
+```
+
+## DTO Best Practices
+
+<Tip>
+**DO:**
+- Keep DTOs simple and flat when possible
+- Use clear, descriptive field names
+- Provide helpful validation messages
+- Separate request and response DTOs
+- Convert entities to DTOs before returning
+
+**DON'T:**
+- Expose domain entities directly in APIs
+- Include sensitive fields in response DTOs
+- Mix request and response concerns
+- Put business logic in DTOs
+- Skip validation for "trusted" inputs
+</Tip>
+
+## Three-Layer Validation Recap
+
+<Steps>
+
+### HTTP Layer (DTOs)
+
+Syntactic validation with `validator` crate:
+```rust
+#[validate(length(min = 3, max = 50))]
+pub username: String,
+```
+
+### Application Layer (Services)
+
+Contextual rules requiring I/O:
+```rust
+if self.repository.exists_by_email(&email).await? {
+    return Err(ApiError::Conflict("Email exists"));
+}
+```
+
+### Domain Layer (Value Objects)
+
+Immutable business rules:
+```rust
+impl Username {
+    pub fn new(value: String) -> Result<Self, DomainError> {
+        validate_username(&value)?;
+        Ok(Self(value))
+    }
+}
+```
+
+</Steps>
+
+## Common Validation Patterns
+
+| Pattern | Example | Use Case |
+|---------|---------|----------|
+| Email | `#[validate(email)]` | User registration, contact forms |
+| Length | `#[validate(length(min = 3, max = 50))]` | Usernames, titles, descriptions |
+| Range | `#[validate(range(min = 0, max = 100))]` | Percentages, ages, quantities |
+| URL | `#[validate(url)]` | Website fields, profile links |
+| Custom | `#[validate(custom = "func")]` | Complex business rules |
+
+## Testing DTOs
+
+Test validation rules:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use validator::Validate;
+
+    #[test]
+    fn test_valid_registration() {
+        let dto = RegisterUserRequest {
+            email: "test@example.com".to_string(),
+            username: "validuser".to_string(),
+            password: "securepass123".to_string(),
+        };
+        assert!(dto.validate().is_ok());
+    }
+
+    #[test]
+    fn test_invalid_email() {
+        let dto = RegisterUserRequest {
+            email: "invalid-email".to_string(),
+            username: "validuser".to_string(),
+            password: "securepass123".to_string(),
+        };
+        assert!(dto.validate().is_err());
+    }
+}
+```
+
+## Next Steps
+
+- Learn about [Controllers](/core-concepts/controllers) that use DTOs
+- Understand [Value Objects](/core-concepts/entities-value-objects) for domain validation
+- Explore [Services](/core-concepts/services) for business rules

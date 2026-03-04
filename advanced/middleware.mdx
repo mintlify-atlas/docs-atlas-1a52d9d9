@@ -1,0 +1,350 @@
+---
+title: Middleware
+description: Custom middleware and built-in middleware for the Ironclad framework
+---
+
+Middleware in Ironclad provides powerful request/response interception capabilities. The framework includes built-in middleware for common tasks and supports custom middleware development.
+
+## Built-in Middleware
+
+### Maintenance Mode Middleware
+
+The maintenance mode middleware allows you to temporarily disable your application for updates or maintenance while optionally providing bypass access to specific users.
+
+<Tip>
+Maintenance mode is Laravel-inspired and includes features like secret bypass, custom HTML templates, and redirect capabilities.
+</Tip>
+
+#### Implementation
+
+The middleware is automatically applied in `src/main.rs`:
+
+```rust src/main.rs
+HttpServer::new(move || {
+    let app = App::new();
+    
+    app.wrap(MaintenanceMode) // Applied before CORS
+        .wrap(
+            Cors::default()
+                .allow_any_origin()
+                .allow_any_method()
+                .allow_any_header()
+                .max_age(3600),
+        )
+        .wrap(TracingLogger::default())
+        .configure(routes::configure)
+        .default_service(web::route().to(handle_not_found))
+})
+```
+
+#### Key Features
+
+**Cookie-based Bypass**
+
+The middleware checks for a `maintenance_bypass` cookie to allow authorized users to bypass maintenance mode:
+
+```rust src/middleware/maintenance.rs
+if let Some(secret) = secret_opt {
+    // Check if the user already has a valid bypass cookie
+    if let Some(cookie) = req.cookie("maintenance_bypass") {
+        if cookie.value() == secret {
+            // Valid cookie, bypass maintenance mode completely
+            let fut = self.service.call(req);
+            return Box::pin(async move {
+                let res = fut.await?;
+                Ok(res.map_into_left_body())
+            });
+        }
+    }
+}
+```
+
+**URL-based Secret Authentication**
+
+Users can authenticate by appending the secret to any URL:
+
+```rust src/middleware/maintenance.rs
+let path = req.path().to_string();
+let secret_suffix = format!("/{}", secret);
+
+if path.ends_with(&secret_suffix) {
+    // Remove secret from path to determine where to redirect
+    let new_path = path.trim_end_matches(&secret_suffix);
+    let redirect_to = if new_path.is_empty() { "/" } else { new_path }.to_string();
+    
+    // Create a session cookie for the bypass
+    let mut cookie = Cookie::new("maintenance_bypass", secret);
+    cookie.set_path("/");
+    cookie.set_http_only(true);
+
+    let response = HttpResponse::TemporaryRedirect()
+        .insert_header((header::LOCATION, redirect_to.as_str()))
+        .cookie(cookie)
+        .finish();
+}
+```
+
+**Response Type Detection**
+
+The middleware automatically detects whether to return HTML or JSON based on the `Accept` header:
+
+```rust src/middleware/maintenance.rs
+fn is_browser(req: &ServiceRequest) -> bool {
+    if let Some(accept) = req.headers().get("Accept") {
+        if let Ok(accept_str) = accept.to_str() {
+            return accept_str.contains("text/html");
+        }
+    }
+    false
+}
+```
+
+### Rate Limiting Middleware
+
+The rate limiting middleware uses the token bucket algorithm to prevent abuse and ensure fair resource usage.
+
+#### Basic Configuration
+
+```rust src/middleware/rate_limit.rs
+pub fn api_rate_limiter(
+    seconds: u64,
+    burst_size: u32,
+) -> GovernorConfig<PeerIpKeyExtractor, actix_governor::governor::middleware::StateInformationMiddleware> {
+    GovernorConfigBuilder::default()
+        .per_second(seconds)
+        .burst_size(burst_size)
+        .key_extractor(PeerIpKeyExtractor)
+        .use_headers()
+        .finish()
+        .expect("Failed to build rate limiter configuration: invalid parameters")
+}
+```
+
+#### Usage Examples
+
+**Standard API Protection**
+
+```rust
+use actix_governor::Governor;
+use crate::middleware::api_rate_limiter;
+
+// Allow 10 requests immediately, then 1 request every 2 seconds
+App::new().wrap(Governor::new(&api_rate_limiter(2, 10)))
+```
+
+**Strict Rate Limiting for Sensitive Endpoints**
+
+```rust
+// Allow 1 request every 12 seconds (5 requests per minute)
+let strict_limiter = api_rate_limiter(12, 1);
+
+web::resource("/api/admin/sensitive")
+    .wrap(Governor::new(&strict_limiter))
+    .route(web::post().to(sensitive_handler))
+```
+
+#### Token Bucket Algorithm
+
+With `api_rate_limiter(2, 10)`:
+- **Initial quota**: 10 requests available immediately
+- **Replenishment**: 1 token refills every 2 seconds
+- **Full recovery**: 20 seconds (10 tokens × 2 seconds/token)
+
+#### Response Headers
+
+With `use_headers()` enabled, responses include:
+
+```
+x-ratelimit-limit: 10
+x-ratelimit-remaining: 7
+x-ratelimit-reset: 1709876543
+x-ratelimit-after: 2  (on 429 errors)
+```
+
+### Custom Device ID Extractor
+
+For more granular control, use device-based rate limiting instead of IP-based:
+
+```rust src/middleware/rate_limit.rs
+#[derive(Clone)]
+pub struct DeviceIdExtractor;
+
+impl KeyExtractor for DeviceIdExtractor {
+    type Key = String;
+    type KeyExtractionError = ApiError;
+
+    fn extract(&self, req: &ServiceRequest) -> Result<Self::Key, Self::KeyExtractionError> {
+        // Try to read the unique device identifier from the headers
+        if let Some(device_id) = req.headers().get("x-device-id") {
+            if let Ok(id_str) = device_id.to_str() {
+                return Ok(id_str.to_string());
+            }
+        }
+
+        // Fallback: Use IP address if no device ID is provided
+        let ip = req.connection_info().realip_remote_addr()
+            .unwrap_or("unknown_ip")
+            .to_string();
+
+        Ok(ip)
+    }
+}
+```
+
+**Usage with Device ID**
+
+```rust
+use crate::middleware::api_rate_limiter_with_device_id;
+
+// Rate limit by device ID instead of IP
+let device_limiter = api_rate_limiter_with_device_id(2, 10);
+App::new().wrap(Governor::new(&device_limiter))
+```
+
+**Client Implementation**
+
+```javascript
+fetch('/api/users', {
+  headers: {
+    'x-device-id': 'unique-device-identifier-123'
+  }
+});
+```
+
+## Creating Custom Middleware
+
+Custom middleware in Actix-web follows the `Transform` and `Service` pattern.
+
+### Example: Request Logger Middleware
+
+```rust
+use actix_web::{
+    dev::{Service, ServiceRequest, ServiceResponse, Transform},
+    Error,
+};
+use futures::future::{ok, Ready};
+use std::future::Future;
+use std::pin::Pin;
+use std::task::{Context, Poll};
+
+pub struct RequestLogger;
+
+impl<S, B> Transform<S, ServiceRequest> for RequestLogger
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error>,
+    S::Future: 'static,
+    B: 'static,
+{
+    type Response = ServiceResponse<B>;
+    type Error = Error;
+    type Transform = RequestLoggerMiddleware<S>;
+    type InitError = ();
+    type Future = Ready<Result<Self::Transform, Self::InitError>>;
+
+    fn new_transform(&self, service: S) -> Self::Future {
+        ok(RequestLoggerMiddleware { service })
+    }
+}
+
+pub struct RequestLoggerMiddleware<S> {
+    service: S,
+}
+
+impl<S, B> Service<ServiceRequest> for RequestLoggerMiddleware<S>
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error>,
+    S::Future: 'static,
+    B: 'static,
+{
+    type Response = ServiceResponse<B>;
+    type Error = Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>>>>;
+
+    fn poll_ready(&self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.service.poll_ready(cx)
+    }
+
+    fn call(&self, req: ServiceRequest) -> Self::Future {
+        let method = req.method().to_string();
+        let path = req.path().to_string();
+        
+        tracing::info!("Request: {} {}", method, path);
+
+        let fut = self.service.call(req);
+        Box::pin(async move {
+            let res = fut.await?;
+            tracing::info!("Response: {}", res.status());
+            Ok(res)
+        })
+    }
+}
+```
+
+### Applying Custom Middleware
+
+```rust src/main.rs
+use crate::middleware::RequestLogger;
+
+HttpServer::new(move || {
+    App::new()
+        .wrap(RequestLogger)  // Your custom middleware
+        .wrap(MaintenanceMode)
+        .wrap(Cors::default())
+        // ... other configuration
+})
+```
+
+## Middleware Order
+
+<Warning>
+Middleware order matters! Middleware wraps from inside-out, so the last `.wrap()` executes first.
+</Warning>
+
+```rust
+App::new()
+    .wrap(A)  // Executes third
+    .wrap(B)  // Executes second
+    .wrap(C)  // Executes first
+```
+
+### Recommended Order
+
+1. **MaintenanceMode** - Check if application is in maintenance first
+2. **CORS** - Handle cross-origin requests
+3. **TracingLogger** - Log all requests/responses
+4. **RateLimiter** - Prevent abuse
+5. **Authentication** - Verify user credentials
+6. **Custom middleware** - Your business logic
+
+## Best Practices
+
+<Tip>
+**Performance Considerations**
+- Keep middleware logic lightweight
+- Avoid blocking operations in middleware
+- Use async operations for I/O tasks
+- Cache frequently accessed data
+</Tip>
+
+<Warning>
+**Security Considerations**
+- Apply authentication middleware before business logic
+- Rate limit sensitive endpoints more strictly
+- Validate all user input in middleware
+- Use HTTPS-only cookies for bypass tokens
+</Warning>
+
+## Related CLI Commands
+
+See the [Maintenance Mode](/advanced/maintenance-mode) documentation for CLI commands to control maintenance mode.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Error Handling" icon="triangle-exclamation" href="/advanced/error-handling">
+    Learn about error types and propagation
+  </Card>
+  <Card title="Maintenance Mode" icon="wrench" href="/advanced/maintenance-mode">
+    Complete maintenance mode guide
+  </Card>
+</CardGroup>

@@ -1,0 +1,539 @@
+---
+title: Maintenance Mode Commands
+description: Manage application maintenance mode with Laravel-style commands
+---
+
+Maintenance mode allows you to gracefully take your application offline for updates, migrations, or deployments while showing users a custom message or page.
+
+## What is Maintenance Mode?
+
+When maintenance mode is active:
+
+- ✅ Your server keeps running
+- ⛔ All requests receive a **503 Service Unavailable** response
+- 🎨 Users see a custom HTML page or JSON message
+- 🔑 You can create a secret bypass for your team
+- ↪️ You can redirect users to an external status page
+
+## Basic Commands
+
+### Activate Maintenance Mode
+
+```bash
+cargo run --bin ironclad -- down
+```
+
+**Output:**
+```
+🔧 Putting application into maintenance mode...
+
+📝 Writing to: "/home/user/project/storage/framework/maintenance.json"
+
+✅ Application is now in maintenance mode
+
+   All requests will receive a 503 response
+   To bring the application back up, run:
+   cargo run --bin ironclad -- up
+```
+
+### Deactivate Maintenance Mode
+
+```bash
+cargo run --bin ironclad -- up
+```
+
+**Output:**
+```
+🚀 Bringing application out of maintenance mode...
+
+📝 Removing: "/home/user/project/storage/framework/maintenance.json"
+✅ Application is now live
+
+   All requests will be processed normally
+```
+
+## Command Options
+
+The `down` command supports several options:
+
+### --message
+
+Customize the maintenance message shown to users.
+
+```bash
+cargo run --bin ironclad -- down --message "Database migration in progress"
+```
+
+**Default:** "Application is down for maintenance"
+
+### --retry
+
+Set the `Retry-After` header value in seconds.
+
+```bash
+cargo run --bin ironclad -- down --retry 300
+```
+
+**Default:** 60 seconds
+
+**HTTP Response:**
+```
+HTTP/1.1 503 Service Unavailable
+Retry-After: 300
+```
+
+### --secret
+
+Create a bypass token for your team to access the application.
+
+```bash
+cargo run --bin ironclad -- down --secret "myteam2024"
+```
+
+**Output:**
+```
+🔑 Secret bypass enabled: /myteam2024
+```
+
+**How it works:**
+
+1. Regular user access:
+   ```
+   http://localhost:8080/api/users
+   → 503 Maintenance ❌
+   ```
+
+2. Team access with secret:
+   ```
+   http://localhost:8080/api/users/myteam2024
+   → Redirects to /api/users
+   → Sets bypass cookie
+   → 200 OK ✅
+   ```
+
+3. Subsequent requests:
+   ```
+   http://localhost:8080/api/users
+   → 200 OK (cookie active) ✅
+   ```
+
+### --render
+
+Specify a custom HTML template to display.
+
+```bash
+# Use default template from folder
+cargo run --bin ironclad -- down --render "emergency"
+# Loads: templates/render/down/emergency/default.html
+
+# Use specific template file
+cargo run --bin ironclad -- down --render "emergency::low"
+# Loads: templates/render/down/emergency/low.html
+```
+
+**Output:**
+```
+🎨 HTML template: emergency::low
+✅ Template found: templates/render/down/emergency/low.html
+```
+
+### --norender
+
+Force JSON responses even for browser requests (useful for pure APIs).
+
+```bash
+cargo run --bin ironclad -- down --norender
+```
+
+**Output:**
+```
+📋 JSON-only mode (no HTML rendering)
+```
+
+**Response:**
+```json
+{
+  "error": "Service Unavailable",
+  "message": "Application is down for maintenance",
+  "status": 503,
+  "retry_after": 60
+}
+```
+
+### --redirect
+
+Redirect all requests to a specific URL.
+
+```bash
+# Internal redirect
+cargo run --bin ironclad -- down --redirect "/status"
+
+# External redirect
+cargo run --bin ironclad -- down --redirect "https://status.myapp.com"
+```
+
+**Output:**
+```
+↪️  Redirect to: https://status.myapp.com
+```
+
+## HTML Templates
+
+### Template Structure
+
+```
+templates/
+└── render/
+    └── down/
+        ├── default.html              # Default template
+        ├── emergency/
+        │   ├── default.html          # --render "emergency"
+        │   └── low.html              # --render "emergency::low"
+        └── maintenance/
+            └── database.html         # --render "maintenance::database"
+```
+
+### Creating Custom Templates
+
+1. **Create the directory structure:**
+
+```bash
+mkdir -p templates/render/down/myfolder
+```
+
+2. **Create your template file:**
+
+```html templates/render/down/myfolder/default.html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Maintenance</title>
+    <style>
+        body { 
+            background: #2c3e50; 
+            color: white; 
+            text-align: center; 
+            padding-top: 100px;
+            font-family: Arial, sans-serif;
+        }
+        h1 { font-size: 3em; }
+    </style>
+</head>
+<body>
+    <h1>🚧 Under Maintenance</h1>
+    <p>{{MESSAGE}}</p>
+    <p>Please try again in {{RETRY}} seconds</p>
+    <small>Started at: {{TIMESTAMP}}</small>
+</body>
+</html>
+```
+
+3. **Use your template:**
+
+```bash
+cargo run --bin ironclad -- down --render "myfolder"
+```
+
+### Available Template Variables
+
+- `{{MESSAGE}}` - Your custom message (from --message flag)
+- `{{RETRY}}` - Retry time in seconds (from --retry flag)
+- `{{TIMESTAMP}}` - Maintenance activation timestamp (ISO 8601 format)
+
+## Real-World Examples
+
+### Example 1: Scheduled Maintenance
+
+```bash
+cargo run --bin ironclad -- down \
+  --message "Scheduled maintenance: security updates" \
+  --retry 1800 \
+  --secret "admin2024"
+```
+
+**Use case:** Planned maintenance window with team access
+
+### Example 2: Emergency Shutdown
+
+```bash
+cargo run --bin ironclad -- down \
+  --render "emergency" \
+  --message "Security incident detected. Resolving..." \
+  --secret "emergency-access" \
+  --norender
+```
+
+**Use case:** Security incident requiring immediate shutdown
+
+### Example 3: Database Migration
+
+```bash
+# Step 1: Enable maintenance
+cargo run --bin ironclad -- down \
+  --render "maintenance::database" \
+  --message "Migrating from MySQL to PostgreSQL" \
+  --retry 600 \
+  --secret "dbteam"
+
+# Step 2: Team accesses with /dbteam
+# http://localhost:8080/api/users/dbteam
+
+# Step 3: Run migration
+sqlx migrate run
+
+# Step 4: Disable maintenance
+cargo run --bin ironclad -- up
+```
+
+**Use case:** Database migration with team monitoring
+
+### Example 4: External Status Page
+
+```bash
+cargo run --bin ironclad -- down \
+  --redirect "https://status.myapp.com/deploy-in-progress" \
+  --secret "deploy2024"
+```
+
+**Use case:** Redirect users to external status page during deployment
+
+### Example 5: API-Only Maintenance
+
+```bash
+cargo run --bin ironclad -- down \
+  --message "API maintenance in progress" \
+  --retry 120 \
+  --norender
+```
+
+**Use case:** Pure API with JSON responses only
+
+## Option Conflicts
+
+### ❌ Cannot Combine
+
+Some options cannot be used together:
+
+**--render and --norender:**
+```bash
+# ❌ ERROR
+cargo run --bin ironclad -- down --render "emergency" --norender
+```
+```
+❌ Cannot use both --norender and --render options
+```
+
+**--render and --redirect:**
+```bash
+# ❌ ERROR
+cargo run --bin ironclad -- down --render "emergency" --redirect "/status"
+```
+```
+❌ Cannot use both --render and --redirect options
+```
+
+### ✅ Valid Combinations
+
+```bash
+# Message + Retry + Secret
+cargo run --bin ironclad -- down --message "Updating" --retry 300 --secret "team"
+
+# Render + Secret + Message
+cargo run --bin ironclad -- down --render "emergency" --secret "admin" --message "Critical update"
+
+# Redirect + Secret
+cargo run --bin ironclad -- down --redirect "https://status.app.com" --secret "deploy"
+
+# Norender + Secret + Retry
+cargo run --bin ironclad -- down --norender --secret "api-team" --retry 600
+```
+
+## Maintenance File
+
+Maintenance state is stored in:
+```
+storage/framework/maintenance.json
+```
+
+### File Structure
+
+```json
+{
+  "time": 1708550400,
+  "message": "Database migration in progress",
+  "retry": 300,
+  "created_at": "2026-02-21T20:00:00Z",
+  "secret": "myteam2024",
+  "render": "emergency::low",
+  "redirect": "https://status.myapp.com"
+}
+```
+
+### Check Maintenance Status
+
+**Check if file exists:**
+```bash
+# Linux/macOS
+ls -l storage/framework/maintenance.json
+
+# Windows
+dir storage\framework\maintenance.json
+```
+
+**View file contents:**
+```bash
+# Linux/macOS
+cat storage/framework/maintenance.json
+
+# Windows PowerShell
+Get-Content storage\framework\maintenance.json | ConvertFrom-Json
+```
+
+## Troubleshooting
+
+### Application Still Responding Normally
+
+**Problem:** Server continues to process requests after running `down` command.
+
+**Solution:** Restart the server to load the maintenance file:
+```bash
+# Stop server (Ctrl+C)
+# Restart
+cargo run --bin main
+```
+
+### Template Not Found
+
+**Problem:**
+```
+⚠️  Warning: Template not found: templates/render/down/emergency/default.html
+   Will fall back to default template
+```
+
+**Solution:** Verify template location:
+```bash
+# Templates must be in templates/, not src/templates/
+tree templates/render/down/
+```
+
+### Secret Not Working
+
+**Problem:** Secret bypass URL not working.
+
+**Solutions:**
+1. Clear browser cookies
+2. Test in incognito/private mode
+3. Verify secret in maintenance.json:
+   ```bash
+   cat storage/framework/maintenance.json
+   ```
+
+### Cannot Remove Maintenance File
+
+**Problem:**
+```
+❌ Failed to remove maintenance file: Permission denied
+```
+
+**Solution:** Check file permissions:
+```bash
+# Linux/macOS
+chmod 644 storage/framework/maintenance.json
+rm storage/framework/maintenance.json
+
+# Windows
+del /F storage\framework\maintenance.json
+```
+
+## Best Practices
+
+### 1. Store Secrets Securely
+
+Don't hardcode secrets in scripts:
+
+```bash
+# ❌ Bad: Secret in script
+cargo run --bin ironclad -- down --secret "hardcoded-secret"
+
+# ✅ Good: Use environment variable
+export MAINTENANCE_SECRET="$(openssl rand -hex 16)"
+cargo run --bin ironclad -- down --secret "$MAINTENANCE_SECRET"
+```
+
+### 2. Use Descriptive Templates
+
+Create specific templates for different maintenance types:
+
+```
+templates/render/down/
+├── scheduled/         # Regular scheduled maintenance
+├── emergency/         # Emergency shutdowns
+├── deploy/            # Deployments
+└── database/          # Database migrations
+```
+
+### 3. Set Appropriate Retry Times
+
+- **Quick fixes:** 30-60 seconds
+- **Updates:** 5-10 minutes (300-600 seconds)
+- **Major migrations:** 15-30 minutes (900-1800 seconds)
+
+### 4. Automate with Scripts
+
+Create deployment scripts:
+
+```bash deploy.sh
+#!/bin/bash
+
+# Enable maintenance
+SECRET="deploy-$(date +%s)"
+cargo run --bin ironclad -- down --secret "$SECRET" --message "Deploying v2.0"
+
+echo "Maintenance enabled. Bypass: /$SECRET"
+
+# Deploy
+git pull
+cargo build --release
+sqlx migrate run
+
+# Disable maintenance
+cargo run --bin ironclad -- up
+
+echo "Deployment complete!"
+```
+
+### 5. Notify Users in Advance
+
+Before enabling maintenance:
+- Send email notifications
+- Post on status page
+- Update social media
+- Set up monitoring alerts
+
+## Comparison with Laravel
+
+| Laravel | Rust Ironclad | Description |
+|---------|---------------|-------------|
+| `php artisan down` | `cargo run --bin ironclad -- down` | Enable maintenance |
+| `php artisan up` | `cargo run --bin ironclad -- up` | Disable maintenance |
+| `--secret="token"` | `--secret "token"` | Bypass access |
+| `--render="view"` | `--render "template"` | Custom view |
+| `--redirect="/url"` | `--redirect "/url"` | Redirect |
+| `--retry=600` | `--retry 600` | Retry time |
+
+## Related Documentation
+
+<CardGroup cols={2}>
+  <Card title="Database Command" icon="database" href="/cli/database">
+    Check database before maintenance
+  </Card>
+  <Card title="Storage Commands" icon="hard-drive" href="/cli/storage">
+    Manage storage during maintenance
+  </Card>
+  <Card title="CLI Overview" icon="terminal" href="/cli/overview">
+    View all CLI commands
+  </Card>
+  <Card title="Middleware" icon="shield" href="/middleware/maintenance">
+    How maintenance middleware works
+  </Card>
+</CardGroup>

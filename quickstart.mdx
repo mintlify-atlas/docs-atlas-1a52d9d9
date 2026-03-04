@@ -1,80 +1,359 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick Start
+description: Build your first API endpoint with Rust Ironclad in minutes
 ---
 
-## Get started in three steps
+This guide will walk you through creating your first working API endpoint with authentication, from zero to a fully functional REST API.
 
-Get your documentation site running locally and make your first customization.
+## What You'll Build
 
-### Step 1: Set up your local environment
+By the end of this tutorial, you'll have:
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+- A running Ironclad server
+- User registration and login endpoints
+- An authenticated endpoint to fetch user profiles
+- Understanding of the DDD architecture
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  Make sure you've completed the [Installation](/installation) guide before starting this tutorial.
 </Note>
+
+## Start the Server
+
+First, start your Ironclad development server:
+
+```bash
+cargo run
+```
+
+You should see:
+
+```bash
+╔════════════════════════════════════════════════════╗
+║    🚀 Rust Ironclad Framework (DDD Architecture)  ║
+╚════════════════════════════════════════════════════╝
+📍 Server: http://127.0.0.1:8080
+✅ PostgreSQL connected
+🌐 Listening on http://127.0.0.1:8080
+```
+
+Your server is now running at `http://127.0.0.1:8080`.
+
+## Register a New User
+
+Let's create your first user using the registration endpoint:
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "john@example.com",
+    "username": "john_doe",
+    "password": "SecurePassword123"
+  }'
+```
+
+<Note>
+  Ironclad automatically validates input. Emails must be valid, usernames must be 3-20 characters, and passwords must be strong.
+</Note>
+
+You'll receive a response with the user details and a JWT token:
+
+```json
+{
+  "user": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "email": "john@example.com",
+    "username": "john_doe",
+    "role": "User",
+    "is_active": true,
+    "created_at": "2026-03-04T10:30:00Z",
+    "updated_at": "2026-03-04T10:30:00Z"
+  },
+  "token": "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9..."
+}
+```
+
+<Warning>
+  Save the token from the response - you'll need it for authenticated requests.
+</Warning>
+
+## Login with Your User
+
+You can also log in with existing credentials:
+
+```bash
+curl -X POST http://127.0.0.1:8080/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "john@example.com",
+    "password": "SecurePassword123"
+  }'
+```
+
+The response contains the same user object and a new JWT token.
+
+## Access Protected Endpoints
+
+Now let's use the token to access a protected endpoint. Replace `YOUR_TOKEN` with the token you received:
+
+```bash
+curl -X GET http://127.0.0.1:8080/api/user/profile \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+Response:
+
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "email": "john@example.com",
+  "username": "john_doe",
+  "role": "User",
+  "is_active": true,
+  "created_at": "2026-03-04T10:30:00Z",
+  "updated_at": "2026-03-04T10:30:00Z"
+}
+```
+
+## Understanding the Request Flow
+
+Here's what happens when you make a request to `/api/user/profile`:
+
+<Steps>
+  <Step title="Request hits the route">
+    The request reaches the route defined in `src/routes/api.rs:34`:
+    
+    ```rust src/routes/api.rs
+    .route("/profile", web::get().to(UserController::get_profile))
+    ```
+  </Step>
+  
+  <Step title="Authentication extractor validates JWT">
+    The `AuthUser` extractor in the controller automatically validates the JWT token and extracts user information:
+    
+    ```rust src/infrastructure/http/controllers/user_controller.rs
+    pub async fn get_profile(
+        service: web::Data<Arc<UserService>>,
+        user: AuthUser, // Extracts and validates JWT
+    ) -> ApiResult<HttpResponse> {
+        let user_response = service.get_user_by_id(&user.id).await?;
+        Ok(HttpResponse::Ok().json(user_response))
+    }
+    ```
+  </Step>
+  
+  <Step title="Service layer handles business logic">
+    The service queries the repository for user data:
+    
+    ```rust src/application/services/user_service.rs
+    pub async fn get_user_by_id(&self, id: &str) -> Result<UserResponse, ApiError> {
+        let user = self.repository.find_by_id(id).await?;
+        Ok(user.to_response())
+    }
+    ```
+  </Step>
+  
+  <Step title="Repository queries the database">
+    The repository executes a type-safe SQL query:
+    
+    ```rust src/infrastructure/persistence/postgres/user_repository.rs
+    async fn find_by_id(&self, id: &str) -> Result<User, RepositoryError> {
+        let user = sqlx::query_as::<_, User>(
+            "SELECT * FROM users WHERE id = $1"
+        )
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(user)
+    }
+    ```
+  </Step>
+  
+  <Step title="Response returned to client">
+    The user entity is converted to a response DTO and returned as JSON.
+  </Step>
+</Steps>
+
+## Exploring Other Endpoints
+
+### List All Users (Public)
+
+This endpoint doesn't require authentication:
+
+```bash
+curl http://127.0.0.1:8080/api/noauth/users
+```
+
+### Get User by ID
+
+```bash
+curl http://127.0.0.1:8080/api/user/550e8400-e29b-41d4-a716-446655440000
+```
+
+### Health Check
+
+Verify your server is healthy:
+
+```bash
+curl http://127.0.0.1:8080/api/administration/health
+```
+
+Response:
+
+```json
+{
+  "status": "healthy",
+  "timestamp": "2026-03-04T10:30:00Z"
+}
+```
+
+## Architecture Overview
+
+Ironclad follows Domain-Driven Design (DDD) with a clean 5-layer architecture:
+
+```
+┌─────────────────────────────────────┐
+│  Routes Layer                       │ ← HTTP Routing (src/routes/)
+├─────────────────────────────────────┤
+│  Infrastructure Layer               │ ← Controllers, HTTP handlers (src/infrastructure/)
+├─────────────────────────────────────┤
+│  Application Layer                  │ ← Services, DTOs (src/application/)
+├─────────────────────────────────────┤
+│  Domain Layer                       │ ← Entities, Business Logic (src/domain/)
+├─────────────────────────────────────┤
+│  Interfaces Layer                   │ ← Repository Traits (src/interfaces/)
+└─────────────────────────────────────┘
+```
+
+<Note>
+  This separation ensures your business logic remains independent of frameworks and databases, making it easy to test and maintain.
+</Note>
+
+## Working with Validation
+
+Ironclad uses the `ValidatedJson` extractor for automatic input validation:
+
+```rust src/infrastructure/http/controllers/auth_controller.rs
+pub async fn register(
+    service: web::Data<Arc<AuthService>>,
+    req: ValidatedJson<RegisterUserRequest>,
+) -> ApiResult<HttpResponse> {
+    let response = service.register(req.0).await?;
+    Ok(HttpResponse::Created().json(response))
+}
+```
+
+The `RegisterUserRequest` DTO defines validation rules:
+
+```rust src/application/dtos/auth_dto.rs
+#[derive(Debug, Deserialize, Validate)]
+pub struct RegisterUserRequest {
+    #[validate(email(message = "Invalid email format"))]
+    pub email: String,
+    
+    #[validate(length(min = 3, max = 20))]
+    pub username: String,
+    
+    #[validate(length(min = 8))]
+    pub password: String,
+}
+```
+
+If validation fails, Ironclad automatically returns a 400 Bad Request with error details.
+
+## Next Steps
+
+Congratulations! You've successfully:
+
+- Started an Ironclad server
+- Registered and authenticated users
+- Made requests to protected endpoints
+- Understood the request flow
+
+Now you can:
+
+1. **Learn the Project Structure** - Understand how code is organized in the [Project Structure](/project-structure) guide
+2. **Add Your Own Endpoints** - Create custom controllers and routes
+3. **Explore Domain Models** - Check out `src/domain/entities/` to see business logic
+4. **Configure Security** - Customize JWT settings and bcrypt cost in `.env`
+
+## CLI Commands
+
+Ironclad includes a powerful CLI tool for common tasks:
+
+```bash
+# Check database connection
+cargo run --bin ironclad -- db-check
+
+# Show framework version
+cargo run --bin ironclad -- version
+
+# Enable maintenance mode
+cargo run --bin ironclad -- down
+
+# Disable maintenance mode
+cargo run --bin ironclad -- up
+```
+
+## Testing Your API
+
+You can use tools like [Postman](https://www.postman.com/), [Insomnia](https://insomnia.rest/), or [HTTPie](https://httpie.io/) to test your API:
+
+<CodeGroup>
+```bash cURL
+curl -X POST http://127.0.0.1:8080/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"john@example.com","password":"SecurePassword123"}'
+```
+
+```bash HTTPie
+http POST :8080/api/auth/login \
+  email=john@example.com \
+  password=SecurePassword123
+```
+
+```javascript JavaScript (Fetch)
+fetch('http://127.0.0.1:8080/api/auth/login', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    email: 'john@example.com',
+    password: 'SecurePassword123'
+  })
+})
+.then(res => res.json())
+.then(data => console.log(data));
+```
+</CodeGroup>
+
+## Common Issues
+
+### Invalid Token Error
+
+If you receive a 401 Unauthorized error:
+
+- Ensure you're including the `Authorization: Bearer <token>` header
+- Check that the token hasn't expired (default: 24 hours)
+- Verify the `JWT_SECRET` hasn't changed since token generation
+
+### Validation Errors
+
+If your request fails validation:
+
+- Check the error message for specific field requirements
+- Ensure email format is valid
+- Verify username is 3-20 characters
+- Confirm password is at least 8 characters
+
+### Database Connection Error
+
+If the server fails to connect to PostgreSQL:
+
+```bash
+# Verify PostgreSQL is running
+pg_isready
+
+# Test connection with CLI
+cargo run --bin ironclad -- db-check
+```

@@ -1,0 +1,157 @@
+---
+title: CLI Overview
+description: Learn how to use the Rust Ironclad CLI tool for managing your application
+---
+
+The Rust Ironclad Framework includes a powerful CLI tool inspired by Laravel Artisan for common development and maintenance tasks.
+
+## Installation
+
+The CLI binary is included in the project and can be run with:
+
+```bash
+cargo run --bin ironclad -- [command]
+```
+
+### Create an Alias
+
+For faster development, create an alias for the CLI:
+
+**Bash/Zsh (Linux/macOS):**
+
+```bash
+# Add to ~/.bashrc or ~/.zshrc
+alias ironclad='cargo run --bin ironclad --'
+
+# Usage
+ironclad version
+ironclad db-check
+ironclad down --message "Updating..."
+```
+
+**PowerShell (Windows):**
+
+```powershell
+# Add to your PowerShell profile
+function ironclad { cargo run --bin ironclad -- $args }
+
+# Usage
+ironclad version
+ironclad db-check
+ironclad down --message "Updating..."
+```
+
+### Install Globally
+
+For production use, install the CLI globally:
+
+```bash
+cargo install --path . --bin ironclad
+
+# Now use directly
+ironclad version
+ironclad up
+ironclad down
+```
+
+## Available Commands
+
+The CLI tool provides the following commands:
+
+| Command | Description |
+|---------|-------------|
+| `version` | Show framework version and info |
+| `db-check` | Check database connection and health |
+| `down` | Put the application into maintenance mode |
+| `up` | Bring the application out of maintenance mode |
+| `storage` | Storage management commands (check, link, info, init) |
+| `test` | Run CLI diagnostics |
+
+## Project Root Detection
+
+The CLI automatically detects and changes to the project root directory by searching for `Cargo.toml`. You can run CLI commands from anywhere within your project directory tree.
+
+**Output example:**
+```
+📁 Changed working directory to: "/home/user/my-project"
+```
+
+## Getting Help
+
+View all available commands:
+
+```bash
+cargo run --bin ironclad -- --help
+```
+
+View help for a specific command:
+
+```bash
+cargo run --bin ironclad -- down --help
+```
+
+## Running the Application
+
+The project has two binaries:
+
+| Binary | Command | Purpose |
+|--------|---------|----------|
+| `main` | `cargo run --bin main` | API Server (default) |
+| `ironclad` | `cargo run --bin ironclad` | CLI Tool |
+
+## Common Workflows
+
+### Development Workflow
+
+```bash
+# 1. Start the server
+cargo run --bin main
+
+# 2. In another terminal, check database
+cargo run --bin ironclad -- db-check
+
+# 3. Put in maintenance mode for updates
+cargo run --bin ironclad -- down --message "Deploying new features"
+
+# 4. Run migrations, updates, etc.
+sqlx migrate run
+
+# 5. Bring back online
+cargo run --bin ironclad -- up
+```
+
+### Initial Setup Workflow
+
+```bash
+# 1. Check CLI is working
+cargo run --bin ironclad -- test
+
+# 2. Initialize storage directories
+cargo run --bin ironclad -- storage init
+
+# 3. Create storage symlink
+cargo run --bin ironclad -- storage link
+
+# 4. Verify database connection
+cargo run --bin ironclad -- db-check
+
+# 5. Check storage setup
+cargo run --bin ironclad -- storage check
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Version Command" icon="hashtag" href="/cli/version">
+    Display framework version and information
+  </Card>
+  <Card title="Database Command" icon="database" href="/cli/database">
+    Check database connectivity and health
+  </Card>
+  <Card title="Maintenance Mode" icon="screwdriver-wrench" href="/cli/maintenance">
+    Manage application maintenance mode
+  </Card>
+  <Card title="Storage Management" icon="hard-drive" href="/cli/storage">
+    Initialize and manage storage directories
+  </Card>
+</CardGroup>

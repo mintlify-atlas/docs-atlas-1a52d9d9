@@ -1,0 +1,495 @@
+---
+title: MongoDB
+description: MongoDB support in Ironclad (optional)
+---
+
+## Overview
+
+Ironclad includes optional MongoDB support for applications that need a document database alongside or instead of PostgreSQL. The MongoDB integration uses the official `mongodb` driver version 2.7.
+
+<Warning>
+MongoDB support is currently experimental and not as thoroughly tested as PostgreSQL. Use with caution in production environments.
+</Warning>
+
+## Dependencies
+
+From `Cargo.toml`:
+
+```toml
+[dependencies]
+# Database - MongoDB (Optional)
+mongodb = "2.7"
+```
+
+## Configuration
+
+MongoDB is disabled by default and must be explicitly enabled through environment variables:
+
+```bash
+# MongoDB Configuration (Optional - comment out if not using)
+MONGODB_URL=mongodb://localhost:27017
+MONGODB_NAME=template_db
+```
+
+### Configuration Struct
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MongoDBConfig {
+    pub mongo_url: String,
+    pub database_name: String,
+}
+```
+
+The MongoDB configuration is optional in the main application config:
+
+```rust
+pub struct AppConfig {
+    pub server: ServerConfig,
+    pub db_postgres: PostgresConfig,
+    pub mongodb: Option<MongoDBConfig>,  // Optional!
+    // ...
+}
+```
+
+## Connection Setup
+
+The MongoDB connection is initialized in `src/db/mongo.rs`:
+
+```rust
+use mongodb::{Client, Database};
+use crate::config::MongoDBConfig;
+use crate::errors::ApiError;
+
+// Not tested yet, just a placeholder for MongoDB integration
+pub async fn init_mongodb(config: &MongoDBConfig) -> Result<Database, ApiError> {
+    let client = Client::with_uri_str(&config.mongo_url)
+        .await
+        .map_err(|e| ApiError::DatabaseError(e.to_string()))?;
+
+    Ok(client.database(&config.database_name))
+}
+```
+
+## Basic Usage
+
+### Defining Models
+
+```rust
+use serde::{Deserialize, Serialize};
+use mongodb::bson::oid::ObjectId;
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Article {
+    #[serde(rename = "_id", skip_serializing_if = "Option::is_none")]
+    pub id: Option<ObjectId>,
+    pub title: String,
+    pub content: String,
+    pub author_id: String,
+    pub tags: Vec<String>,
+    pub published: bool,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+```
+
+### Insert Document
+
+```rust
+use mongodb::{Database, Collection};
+use mongodb::bson::doc;
+
+pub async fn create_article(
+    db: &Database,
+    article: &Article,
+) -> Result<String, mongodb::error::Error> {
+    let collection: Collection<Article> = db.collection("articles");
+    
+    let result = collection.insert_one(article, None).await?;
+    
+    Ok(result.inserted_id.as_object_id()
+        .unwrap()
+        .to_hex())
+}
+```
+
+### Find Documents
+
+```rust
+use mongodb::bson::doc;
+
+pub async fn find_articles_by_author(
+    db: &Database,
+    author_id: &str,
+) -> Result<Vec<Article>, mongodb::error::Error> {
+    let collection: Collection<Article> = db.collection("articles");
+    
+    let filter = doc! { "author_id": author_id, "published": true };
+    let mut cursor = collection.find(filter, None).await?;
+    
+    let mut articles = Vec::new();
+    while cursor.advance().await? {
+        articles.push(cursor.deserialize_current()?);
+    }
+    
+    Ok(articles)
+}
+```
+
+### Find One Document
+
+```rust
+use mongodb::bson::oid::ObjectId;
+
+pub async fn find_article_by_id(
+    db: &Database,
+    id: &str,
+) -> Result<Option<Article>, mongodb::error::Error> {
+    let collection: Collection<Article> = db.collection("articles");
+    
+    let object_id = ObjectId::parse_str(id)
+        .map_err(|e| mongodb::error::Error::from(
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, e)
+        ))?;
+    
+    let filter = doc! { "_id": object_id };
+    collection.find_one(filter, None).await
+}
+```
+
+### Update Document
+
+```rust
+pub async fn update_article(
+    db: &Database,
+    id: &str,
+    title: &str,
+    content: &str,
+) -> Result<bool, mongodb::error::Error> {
+    let collection: Collection<Article> = db.collection("articles");
+    
+    let object_id = ObjectId::parse_str(id)
+        .map_err(|e| mongodb::error::Error::from(
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, e)
+        ))?;
+    
+    let filter = doc! { "_id": object_id };
+    let update = doc! {
+        "$set": {
+            "title": title,
+            "content": content,
+            "updated_at": chrono::Utc::now()
+        }
+    };
+    
+    let result = collection.update_one(filter, update, None).await?;
+    Ok(result.modified_count > 0)
+}
+```
+
+### Delete Document
+
+```rust
+pub async fn delete_article(
+    db: &Database,
+    id: &str,
+) -> Result<bool, mongodb::error::Error> {
+    let collection: Collection<Article> = db.collection("articles");
+    
+    let object_id = ObjectId::parse_str(id)
+        .map_err(|e| mongodb::error::Error::from(
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, e)
+        ))?;
+    
+    let filter = doc! { "_id": object_id };
+    let result = collection.delete_one(filter, None).await?;
+    
+    Ok(result.deleted_count > 0)
+}
+```
+
+## Advanced Queries
+
+### Aggregation Pipeline
+
+```rust
+use mongodb::bson::doc;
+
+pub async fn get_articles_by_tag_count(
+    db: &Database,
+) -> Result<Vec<mongodb::bson::Document>, mongodb::error::Error> {
+    let collection: Collection<Article> = db.collection("articles");
+    
+    let pipeline = vec![
+        doc! { "$unwind": "$tags" },
+        doc! {
+            "$group": {
+                "_id": "$tags",
+                "count": { "$sum": 1 }
+            }
+        },
+        doc! { "$sort": { "count": -1 } },
+        doc! { "$limit": 10 },
+    ];
+    
+    let mut cursor = collection.aggregate(pipeline, None).await?;
+    let mut results = Vec::new();
+    
+    while cursor.advance().await? {
+        results.push(cursor.deserialize_current()?);
+    }
+    
+    Ok(results)
+}
+```
+
+### Text Search
+
+```rust
+// First, create a text index (in your initialization code)
+pub async fn create_text_index(db: &Database) -> Result<(), mongodb::error::Error> {
+    let collection: Collection<Article> = db.collection("articles");
+    
+    use mongodb::IndexModel;
+    use mongodb::bson::doc;
+    
+    let index = IndexModel::builder()
+        .keys(doc! { "title": "text", "content": "text" })
+        .build();
+    
+    collection.create_index(index, None).await?;
+    Ok(())
+}
+
+// Then use text search
+pub async fn search_articles(
+    db: &Database,
+    search_term: &str,
+) -> Result<Vec<Article>, mongodb::error::Error> {
+    let collection: Collection<Article> = db.collection("articles");
+    
+    let filter = doc! { "$text": { "$search": search_term } };
+    let mut cursor = collection.find(filter, None).await?;
+    
+    let mut articles = Vec::new();
+    while cursor.advance().await? {
+        articles.push(cursor.deserialize_current()?);
+    }
+    
+    Ok(articles)
+}
+```
+
+## Connection URL Formats
+
+### Local Development
+
+```bash
+MONGODB_URL=mongodb://localhost:27017
+```
+
+### With Authentication
+
+```bash
+MONGODB_URL=mongodb://username:password@localhost:27017
+```
+
+### MongoDB Atlas (Cloud)
+
+```bash
+MONGODB_URL=mongodb+srv://username:password@cluster0.mongodb.net/?retryWrites=true&w=majority
+```
+
+### Replica Set
+
+```bash
+MONGODB_URL=mongodb://host1:27017,host2:27017,host3:27017/?replicaSet=rs0
+```
+
+## Hybrid Setup (PostgreSQL + MongoDB)
+
+You can use both PostgreSQL and MongoDB in the same application:
+
+```rust
+use sqlx::PgPool;
+use mongodb::Database;
+
+pub struct AppState {
+    pub pg_pool: PgPool,
+    pub mongo_db: Option<Database>,
+}
+
+// In your main.rs
+let config = AppConfig::from_env()?;
+
+// Initialize PostgreSQL
+let pg_pool = init_pool(&config.db_postgres).await?;
+
+// Optionally initialize MongoDB
+let mongo_db = if let Some(ref mongo_config) = config.mongodb {
+    Some(init_mongodb(mongo_config).await?)
+} else {
+    None
+};
+
+let app_state = AppState { pg_pool, mongo_db };
+```
+
+Use case example:
+- **PostgreSQL**: Store structured user data, authentication, relationships
+- **MongoDB**: Store unstructured content, logs, analytics events
+
+## Error Handling
+
+```rust
+use mongodb::error::Error as MongoError;
+use crate::errors::ApiError;
+
+pub async fn safe_find_article(
+    db: &Database,
+    id: &str,
+) -> Result<Article, ApiError> {
+    find_article_by_id(db, id)
+        .await
+        .map_err(|e| ApiError::DatabaseError(e.to_string()))?
+        .ok_or_else(|| ApiError::NotFound("Article not found".to_string()))
+}
+```
+
+## Indexes
+
+Create indexes for better query performance:
+
+```rust
+use mongodb::{IndexModel, options::IndexOptions};
+use mongodb::bson::doc;
+
+pub async fn create_indexes(db: &Database) -> Result<(), mongodb::error::Error> {
+    let collection: Collection<Article> = db.collection("articles");
+    
+    // Single field index
+    let author_index = IndexModel::builder()
+        .keys(doc! { "author_id": 1 })
+        .build();
+    
+    // Compound index
+    let published_date_index = IndexModel::builder()
+        .keys(doc! { "published": 1, "created_at": -1 })
+        .build();
+    
+    // Unique index
+    let unique_index = IndexModel::builder()
+        .keys(doc! { "slug": 1 })
+        .options(IndexOptions::builder().unique(true).build())
+        .build();
+    
+    collection.create_indexes(
+        vec![author_index, published_date_index, unique_index],
+        None
+    ).await?;
+    
+    Ok(())
+}
+```
+
+## Transactions
+
+MongoDB supports multi-document transactions (requires replica set):
+
+```rust
+use mongodb::ClientSession;
+
+pub async fn transfer_with_transaction(
+    db: &Database,
+    from_id: &str,
+    to_id: &str,
+    amount: i64,
+) -> Result<(), mongodb::error::Error> {
+    let client = db.client();
+    let mut session = client.start_session(None).await?;
+    
+    session.start_transaction(None).await?;
+    
+    // Perform operations within transaction
+    let accounts: Collection<mongodb::bson::Document> = db.collection("accounts");
+    
+    accounts.update_one_with_session(
+        doc! { "_id": from_id },
+        doc! { "$inc": { "balance": -amount } },
+        None,
+        &mut session,
+    ).await?;
+    
+    accounts.update_one_with_session(
+        doc! { "_id": to_id },
+        doc! { "$inc": { "balance": amount } },
+        None,
+        &mut session,
+    ).await?;
+    
+    session.commit_transaction().await?;
+    Ok(())
+}
+```
+
+## Testing Status
+
+<Warning>
+As noted in the source code, MongoDB integration is "not tested yet" and serves as a placeholder. Before using in production:
+
+1. Add comprehensive unit tests
+2. Test connection pooling under load
+3. Verify error handling
+4. Test transaction support if using replica sets
+5. Benchmark performance for your use case
+</Warning>
+
+## Troubleshooting
+
+### Cannot Connect to MongoDB
+
+**Error:** `Failed to connect to MongoDB`
+
+**Solutions:**
+- Verify MongoDB server is running
+- Check `MONGODB_URL` is correct
+- Ensure network connectivity
+- Check authentication credentials
+
+### Invalid ObjectId
+
+**Error:** `Error parsing ObjectId`
+
+**Solutions:**
+- Verify the ID string is a valid 24-character hexadecimal
+- Use `ObjectId::parse_str()` with proper error handling
+
+### Database Not Found
+
+**Error:** Database operations fail silently
+
+**Solutions:**
+- MongoDB creates databases and collections lazily
+- Ensure `MONGODB_NAME` is set correctly
+- Check user permissions
+
+## Best Practices
+
+1. **Use connection pooling**: The driver handles this automatically
+2. **Index frequently queried fields**: Dramatically improves performance
+3. **Use projection**: Only fetch fields you need
+4. **Handle errors gracefully**: MongoDB errors should not crash your app
+5. **Validate ObjectIds**: Always validate ID strings before parsing
+6. **Use transactions sparingly**: They have performance overhead
+7. **Monitor performance**: Use MongoDB Atlas or other monitoring tools
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="PostgreSQL Setup" icon="database" href="/database/postgres">
+    Learn about the primary PostgreSQL database integration
+  </Card>
+  <Card title="Configuration" icon="gear" href="/database/configuration">
+    Configure multiple databases in your application
+  </Card>
+</CardGroup>

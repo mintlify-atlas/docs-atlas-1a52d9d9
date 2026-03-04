@@ -1,0 +1,264 @@
+---
+title: Welcome to Rust Ironclad
+description: Enterprise-grade web framework for Rust with Domain-Driven Design architecture
+mode: custom
+---
+
+<div className="relative overflow-hidden bg-gradient-to-br from-[#0f1117] via-[#1a1d27] to-[#0f1117] dark:from-[#0f1117] dark:via-[#1a1d27] dark:to-[#0f1117] py-20 lg:py-24">
+  <div className="absolute inset-0 bg-[url('/grid.svg')] opacity-10"></div>
+  <div className="relative max-w-6xl mx-auto px-6 lg:px-8">
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-center">
+      <div className="lg:col-span-7">
+        <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#CE422B]/10 dark:bg-[#CE422B]/10 border border-[#CE422B]/20 dark:border-[#CE422B]/20 mb-6">
+          <span className="text-[#CE422B] dark:text-[#E86B50] text-sm font-medium">v0.0.3</span>
+          <span className="text-gray-400 dark:text-gray-500 text-sm">•</span>
+          <span className="text-gray-300 dark:text-gray-400 text-sm">Active Development</span>
+        </div>
+        <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-white dark:text-white mb-6 leading-tight">
+          Build elegant web services with Rust
+        </h1>
+        <p className="text-lg sm:text-xl text-gray-300 dark:text-gray-400 mb-8 max-w-2xl leading-relaxed">
+          Laravel-inspired framework with Domain-Driven Design architecture, bringing developer productivity and code clarity to Rust backend development.
+        </p>
+        <div className="flex flex-wrap gap-4">
+          <a 
+            href="/quickstart" 
+            className="inline-flex items-center justify-center px-6 py-3 rounded-lg bg-[#CE422B] hover:bg-[#9C2E1F] text-white font-medium transition-colors"
+          >
+            Get Started
+            <svg className="ml-2 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+            </svg>
+          </a>
+          <a 
+            href="/architecture/overview" 
+            className="inline-flex items-center justify-center px-6 py-3 rounded-lg border border-gray-600 dark:border-gray-700 bg-gray-800/50 dark:bg-gray-800/50 hover:bg-gray-700/50 dark:hover:bg-gray-700/50 text-white font-medium transition-colors"
+          >
+            Architecture Guide
+          </a>
+        </div>
+      </div>
+      <div className="lg:col-span-5 hidden lg:block">
+        <div className="relative">
+          <div className="absolute inset-0 bg-gradient-to-br from-[#CE422B]/20 to-[#9C2E1F]/20 rounded-2xl blur-3xl"></div>
+          <div className="relative bg-[#1a1d27] dark:bg-[#1a1d27] rounded-xl border border-gray-800 dark:border-gray-800 p-6 shadow-2xl">
+            <div className="flex items-center gap-2 mb-4">
+              <div className="w-3 h-3 rounded-full bg-red-500"></div>
+              <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
+              <div className="w-3 h-3 rounded-full bg-green-500"></div>
+            </div>
+            <pre className="text-sm text-gray-300 dark:text-gray-300 overflow-x-auto">
+              <code>{`use ironclad::*;
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    // Initialize with DDD architecture
+    let app_state = AppState::new(
+        config, 
+        pg_pool
+    );
+    
+    HttpServer::new(move || {
+        App::new()
+            .wrap(MaintenanceMode)
+            .configure(routes::configure)
+    })
+    .bind("127.0.0.1:8080")?
+    .run()
+    .await
+}`}</code>
+            </pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="text-center mb-12">
+    <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">
+      Why Rust Ironclad?
+    </h2>
+    <p className="text-lg text-gray-600 dark:text-gray-400 max-w-3xl mx-auto">
+      Built for Rust artisans who want Laravel's developer experience with Rust's performance and safety guarantees
+    </p>
+  </div>
+
+  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+    <div className="group p-6 rounded-xl border border-gray-200 dark:border-[#27272a] bg-white dark:bg-[#1a1d27] hover:border-[#CE422B] dark:hover:border-[#CE422B] transition-colors">
+      <div className="flex items-center gap-3 mb-4">
+        <div className="w-10 h-10 rounded-lg bg-[#CE422B]/10 dark:bg-[#CE422B]/10 flex items-center justify-center">
+          <svg className="w-5 h-5 text-[#CE422B] dark:text-[#E86B50]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+          </svg>
+        </div>
+        <h3 className="text-xl font-semibold text-gray-900 dark:text-white">Domain-Driven Design</h3>
+      </div>
+      <p className="text-gray-600 dark:text-gray-400 leading-relaxed">
+        Clean 5-layer architecture separating domain logic, application services, and infrastructure. Build maintainable systems that scale with your team.
+      </p>
+    </div>
+
+    <div className="group p-6 rounded-xl border border-gray-200 dark:border-[#27272a] bg-white dark:bg-[#1a1d27] hover:border-[#CE422B] dark:hover:border-[#CE422B] transition-colors">
+      <div className="flex items-center gap-3 mb-4">
+        <div className="w-10 h-10 rounded-lg bg-[#CE422B]/10 dark:bg-[#CE422B]/10 flex items-center justify-center">
+          <svg className="w-5 h-5 text-[#CE422B] dark:text-[#E86B50]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+          </svg>
+        </div>
+        <h3 className="text-xl font-semibold text-gray-900 dark:text-white">Blazing Fast</h3>
+      </div>
+      <p className="text-gray-600 dark:text-gray-400 leading-relaxed">
+        Powered by Actix-web and Tokio async runtime. Handle 50,000+ requests per second with zero-copy streaming and efficient connection pooling.
+      </p>
+    </div>
+
+    <div className="group p-6 rounded-xl border border-gray-200 dark:border-[#27272a] bg-white dark:bg-[#1a1d27] hover:border-[#CE422B] dark:hover:border-[#CE422B] transition-colors">
+      <div className="flex items-center gap-3 mb-4">
+        <div className="w-10 h-10 rounded-lg bg-[#CE422B]/10 dark:bg-[#CE422B]/10 flex items-center justify-center">
+          <svg className="w-5 h-5 text-[#CE422B] dark:text-[#E86B50]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+          </svg>
+        </div>
+        <h3 className="text-xl font-semibold text-gray-900 dark:text-white">Type-Safe by Design</h3>
+      </div>
+      <p className="text-gray-600 dark:text-gray-400 leading-relaxed">
+        Value Objects with smart constructors ensure your domain never holds invalid state. Compile-time SQL verification with SQLx catches bugs before deployment.
+      </p>
+    </div>
+
+    <div className="group p-6 rounded-xl border border-gray-200 dark:border-[#27272a] bg-white dark:bg-[#1a1d27] hover:border-[#CE422B] dark:hover:border-[#CE422B] transition-colors">
+      <div className="flex items-center gap-3 mb-4">
+        <div className="w-10 h-10 rounded-lg bg-[#CE422B]/10 dark:bg-[#CE422B]/10 flex items-center justify-center">
+          <svg className="w-5 h-5 text-[#CE422B] dark:text-[#E86B50]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+          </svg>
+        </div>
+        <h3 className="text-xl font-semibold text-gray-900 dark:text-white">Laravel-Style CLI</h3>
+      </div>
+      <p className="text-gray-600 dark:text-gray-400 leading-relaxed">
+        Artisan-inspired commands for maintenance mode, database checks, and storage management. Familiar workflows for developers coming from PHP.
+      </p>
+    </div>
+  </div>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="text-center mb-12">
+    <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">
+      Quick Start
+    </h2>
+    <p className="text-lg text-gray-600 dark:text-gray-400 max-w-3xl mx-auto">
+      Get your first Ironclad application running in under 5 minutes
+    </p>
+  </div>
+
+  <Steps>
+    <Step title="Prerequisites">
+      Install Rust 1.70+ and PostgreSQL 12+. You'll also need sqlx-cli for database migrations.
+      
+      ```bash
+      # Install Rust
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+      
+      # Install sqlx-cli
+      cargo install sqlx-cli
+      ```
+    </Step>
+    
+    <Step title="Clone and Configure">
+      Clone the repository and set up your environment configuration.
+      
+      ```bash
+      git clone https://github.com/Vicente-Alejandro/Rust-Ironclad
+      cd Rust-Ironclad
+      cp .env.example .env
+      ```
+      
+      Edit `.env` with your database credentials and JWT secret.
+    </Step>
+    
+    <Step title="Set Up Database">
+      Create your database and run migrations to set up the schema.
+      
+      ```bash
+      createdb ironclad_db
+      sqlx migrate run
+      ```
+    </Step>
+    
+    <Step title="Run the Server">
+      Start the development server and verify it's working.
+      
+      ```bash
+      cargo run
+      ```
+      
+      <Note>
+        Your API is now running at `http://127.0.0.1:8080`. Try the health check endpoint:
+        
+        ```bash
+        curl http://127.0.0.1:8080/api/administration/health
+        ```
+      </Note>
+    </Step>
+  </Steps>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="text-center mb-12">
+    <h2 className="text-3xl font-bold text-gray-900 dark:text-white mb-4">
+      Explore the Documentation
+    </h2>
+    <p className="text-lg text-gray-600 dark:text-gray-400">
+      Everything you need to build production-ready Rust web services
+    </p>
+  </div>
+
+  <CardGroup cols={3}>
+    <Card title="Architecture" icon="building" href="/architecture/overview">
+      Understand the DDD layers and how they work together
+    </Card>
+    <Card title="Core Concepts" icon="book-open" href="/core-concepts/routing">
+      Learn routing, controllers, services, and repositories
+    </Card>
+    <Card title="Database" icon="database" href="/database/configuration">
+      Configure PostgreSQL and MongoDB connections
+    </Card>
+    <Card title="Security" icon="shield" href="/security/authentication">
+      Implement JWT authentication and authorization
+    </Card>
+    <Card title="CLI Commands" icon="terminal" href="/cli/overview">
+      Master the Artisan-style command line tools
+    </Card>
+    <Card title="API Reference" icon="code" href="/api/application">
+      Browse the complete module documentation
+    </Card>
+  </CardGroup>
+</div>
+
+<div className="mt-20 mb-16 max-w-5xl mx-auto px-6">
+  <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-[#CE422B] to-[#9C2E1F] p-8 lg:p-12">
+    <div className="absolute inset-0 opacity-10">
+      <div className="absolute inset-0" style={{backgroundImage: 'url("data:image/svg+xml,%3Csvg width="60" height="60" viewBox="0 0 60 60" xmlns="http://www.w3.org/2000/svg"%3E%3Cg fill="none" fill-rule="evenodd"%3E%3Cg fill="%23ffffff" fill-opacity="1"%3E%3Cpath d="M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z"/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")'}}></div>
+    </div>
+    <div className="relative text-center">
+      <h2 className="text-3xl font-bold text-white mb-4">
+        Ready to build with Ironclad?
+      </h2>
+      <p className="text-lg text-white/90 mb-8 max-w-2xl mx-auto">
+        Start building elegant, maintainable web services with the power of Rust and the simplicity of Laravel
+      </p>
+      <a 
+        href="/quickstart" 
+        className="inline-flex items-center justify-center px-8 py-3 rounded-lg bg-white text-[#CE422B] font-semibold hover:bg-gray-100 transition-colors shadow-lg"
+      >
+        Get Started Now
+        <svg className="ml-2 w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+        </svg>
+      </a>
+    </div>
+  </div>
+</div>

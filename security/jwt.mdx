@@ -1,0 +1,614 @@
+---
+title: JWT Tokens
+description: JWT token generation, validation, and configuration for stateless authentication
+---
+
+## Overview
+
+Ironclad uses JSON Web Tokens (JWT) for stateless authentication. Tokens are generated upon registration or login and must be included in the `Authorization` header for protected endpoints.
+
+## JWT Structure
+
+JWT tokens contain three parts separated by dots:
+
+```
+header.payload.signature
+```
+
+### Example Token
+
+```
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.
+eyJzdWIiOiI1NTBlODQwMC1lMjliLTQxZDQtYTcxNi00NDY2NTU0NDAwMDAiLFxuImVtYWlsIjoidXNlckBleGFtcGxlLmNvbSIsXG4icm9sZSI6InVzZXIiLFxuImV4cCI6MTcwOTU2MzIwMCxcbmlhdCI6MTcwOTU1NjAwMH0.
+signature_here
+```
+
+## Claims Structure
+
+The payload contains user claims:
+
+```rust
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Claims {
+    pub sub: String,      // Subject (user ID)
+    pub email: String,    // User email
+    pub role: String,     // User role
+    pub exp: i64,         // Expiration timestamp
+    pub iat: i64,         // Issued at timestamp
+}
+```
+
+See `user.rs:152-159`.
+
+### Decoded Payload Example
+
+```json
+{
+  "sub": "550e8400-e29b-41d4-a716-446655440000",
+  "email": "user@example.com",
+  "role": "user",
+  "exp": 1709563200,
+  "iat": 1709556000
+}
+```
+
+## Token Generation
+
+Tokens are generated using the `jsonwebtoken` crate with HMAC-SHA256 signing:
+
+```rust
+use chrono::Utc;
+use jsonwebtoken::{encode, EncodingKey, Header};
+use crate::errors::ApiError;
+use crate::domain::entities::user::Claims;
+use crate::config::AppConfig;
+
+pub fn create_token(
+    user_id: &str,
+    email: &str,
+    role: &str,
+    config: &AppConfig
+) -> Result<String, ApiError> {
+    let now = Utc::now();
+    let iat = now.timestamp();
+    let exp = (now.timestamp()) + config.jwt.expiration;
+
+    let claims = Claims {
+        sub: user_id.to_string(),
+        email: email.to_string(),
+        role: role.to_string(),
+        exp,
+        iat,
+    };
+
+    encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(config.jwt.secret.as_bytes()),
+    )
+    .map_err(|e| ApiError::JwtError(e.to_string()))
+}
+```
+
+See `jwt.rs:7-26`.
+
+### Token Generation Flow
+
+1. **Get current timestamp** - Used for `iat` (issued at)
+2. **Calculate expiration** - Add configured expiration seconds to current time
+3. **Create claims** - Build Claims struct with user data and timestamps
+4. **Encode token** - Sign with HMAC-SHA256 using secret key
+5. **Return JWT string** - Base64-encoded token ready for use
+
+### Usage in Authentication
+
+Tokens are generated after successful registration or login:
+
+```rust
+pub async fn login(&self, request: LoginRequest) -> Result<AuthResponse, ApiError> {
+    // ... authenticate user ...
+    
+    let token = create_token(
+        &user.id,
+        user.email.as_str(),
+        &user.role.to_string(),
+        &self.config,
+    )?;
+
+    Ok(AuthResponse {
+        user: user.to_response(),
+        token,
+    })
+}
+```
+
+See `auth_service.rs:79-84`.
+
+## Token Validation
+
+Tokens are validated on every request to protected endpoints:
+
+```rust
+use jsonwebtoken::{decode, DecodingKey, Validation};
+
+pub fn verify_token(token: &str, config: &AppConfig) -> Result<Claims, ApiError> {
+    decode::<Claims>(
+        token,
+        &DecodingKey::from_secret(config.jwt.secret.as_bytes()),
+        &Validation::default(),
+    )
+    .map(|data| data.claims)
+    .map_err(|e| ApiError::JwtError(e.to_string()))
+}
+```
+
+See `jwt.rs:28-36`.
+
+### Validation Process
+
+1. **Decode token** - Extract header, payload, and signature
+2. **Verify signature** - Recompute signature using secret key
+3. **Check expiration** - Ensure token hasn't expired
+4. **Return claims** - Extract user information from payload
+
+### Automatic Validation
+
+Validation happens automatically in authorization extractors:
+
+```rust
+fn extract_claims(req: &HttpRequest) -> Result<Claims, ApiError> {
+    let config = req
+        .app_data::<actix_web::web::Data<AppConfig>>()
+        .ok_or_else(|| ApiError::InternalServerError("Config not found".to_string()))?;
+
+    let token = req
+        .headers()
+        .get("Authorization")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .ok_or(ApiError::Unauthorized)?;
+
+    crate::utils::jwt::verify_token(token, config.get_ref())
+}
+```
+
+See `authentication.rs:135-148`.
+
+## JWT Configuration
+
+Configure JWT settings in your `.env` file:
+
+```bash
+# JWT Secret (MUST be at least 32 characters in production)
+JWT_SECRET=your-super-secret-jwt-key-change-this-in-production
+
+# Token expiration in seconds
+JWT_EXPIRATION=86400  # 24 hours
+```
+
+### Configuration Structure
+
+```rust
+use serde::Deserialize;
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct JwtConfig {
+    pub secret: String,
+    pub expiration: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AppConfig {
+    pub jwt: JwtConfig,
+    // ... other config fields
+}
+```
+
+### Environment-Based Validation
+
+JWT configuration is validated on startup:
+
+```rust
+fn validate_jwt_config(config: &AppConfig) {
+    if config.server.env == "production" {
+        if config.jwt.secret.len() < 32 {
+            tracing::error!("🔴 JWT_SECRET is too short for production (minimum: 32 characters)");
+            std::process::exit(1);
+        }
+        
+        if config.jwt.secret.contains("change") || config.jwt.secret.contains("secret") {
+            tracing::error!("🔴 JWT_SECRET appears to be a default value - change it!");
+            std::process::exit(1);
+        }
+        
+        tracing::info!("✅ JWT configuration is secure for production");
+    }
+}
+```
+
+See `validators.rs:80-94`.
+
+### Production Requirements
+
+<Warning>
+In production, the JWT secret MUST:
+- Be at least 32 characters long
+- Not contain obvious default values like "change" or "secret"
+- Be kept confidential and never committed to version control
+</Warning>
+
+### Recommended Expiration Times
+
+<Tabs>
+  <Tab title="Short-lived (Recommended)">
+    ```bash
+    JWT_EXPIRATION=3600  # 1 hour
+    ```
+    
+    More secure but requires refresh tokens for long sessions.
+  </Tab>
+  
+  <Tab title="Medium-lived">
+    ```bash
+    JWT_EXPIRATION=86400  # 24 hours
+    ```
+    
+    Balanced approach for most applications.
+  </Tab>
+  
+  <Tab title="Long-lived">
+    ```bash
+    JWT_EXPIRATION=604800  # 7 days
+    ```
+    
+    Convenient but less secure. Use with caution.
+  </Tab>
+</Tabs>
+
+## Using JWT Tokens
+
+### Obtaining a Token
+
+Get a token by registering or logging in:
+
+<CodeGroup>
+```bash Registration
+curl -X POST http://localhost:8080/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "user@example.com",
+    "username": "johndoe",
+    "password": "SecureP@ss123"
+  }'
+```
+
+```bash Login
+curl -X POST http://localhost:8080/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "user@example.com",
+    "password": "SecureP@ss123"
+  }'
+```
+</CodeGroup>
+
+**Response:**
+
+```json
+{
+  "user": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "email": "user@example.com",
+    "username": "johndoe",
+    "role": "user",
+    "is_active": true,
+    "created_at": "2024-03-04T12:00:00Z",
+    "updated_at": "2024-03-04T12:00:00Z"
+  },
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+}
+```
+
+### Making Authenticated Requests
+
+Include the token in the `Authorization` header with the `Bearer` scheme:
+
+```bash
+curl http://localhost:8080/api/users/me \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+```
+
+### Header Format
+
+The Authorization header must follow this exact format:
+
+```
+Authorization: Bearer <token>
+```
+
+- `Authorization` - Header name
+- `Bearer` - Authentication scheme (note the capital B)
+- `<token>` - Your JWT token (no quotes)
+- **Important**: There must be exactly one space between "Bearer" and the token
+
+## Token Lifecycle
+
+### Token Creation
+
+1. User registers or logs in
+2. Credentials are verified
+3. JWT token is generated with claims
+4. Token is returned to client
+
+### Token Usage
+
+1. Client stores token (localStorage, cookie, etc.)
+2. Client includes token in Authorization header
+3. Server extracts and validates token
+4. Server grants access based on claims
+
+### Token Expiration
+
+1. Token expiration time is checked on every request
+2. Expired tokens are rejected with 401 Unauthorized
+3. Client must obtain a new token (re-login or refresh)
+
+```rust
+if token.exp < Utc::now().timestamp() {
+    return Err(ApiError::Unauthorized);
+}
+```
+
+## Claims Usage
+
+Access user information from JWT claims in your handlers:
+
+### Get User ID
+
+```rust
+use crate::infrastructure::http::authentication::AuthUser;
+
+pub async fn get_user_posts(
+    auth: AuthUser,
+) -> ApiResult<HttpResponse> {
+    let user_id = &auth.0.sub;
+    
+    let posts = post_service.get_by_user_id(user_id).await?;
+    
+    Ok(HttpResponse::Ok().json(posts))
+}
+```
+
+### Get User Email
+
+```rust
+pub async fn send_notification(
+    auth: AuthUser,
+) -> ApiResult<HttpResponse> {
+    let email = &auth.0.email;
+    
+    notification_service.send_to_email(email).await?;
+    
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "message": "Notification sent"
+    })))
+}
+```
+
+### Get User Role
+
+```rust
+pub async fn get_permissions(
+    auth: AuthUser,
+) -> ApiResult<HttpResponse> {
+    let role = &auth.0.role;
+    
+    let permissions = match role.as_str() {
+        "admin" => vec!["read", "write", "delete", "manage_users"],
+        "moderator" => vec!["read", "write", "delete"],
+        "premium" => vec!["read", "write", "premium_features"],
+        _ => vec!["read"],
+    };
+    
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "role": role,
+        "permissions": permissions
+    })))
+}
+```
+
+## Error Handling
+
+### Common JWT Errors
+
+<AccordionGroup>
+  <Accordion title="Invalid Token Format">
+    **Error**: `ApiError::Unauthorized`
+    
+    **Cause**: Token is malformed or not a valid JWT
+    
+    **Solution**: Ensure token has three parts separated by dots
+  </Accordion>
+  
+  <Accordion title="Invalid Signature">
+    **Error**: `ApiError::JwtError("InvalidSignature")`
+    
+    **Cause**: Token was signed with a different secret key
+    
+    **Solution**: Verify JWT_SECRET matches between token generation and validation
+  </Accordion>
+  
+  <Accordion title="Token Expired">
+    **Error**: `ApiError::JwtError("ExpiredSignature")`
+    
+    **Cause**: Token's `exp` claim is in the past
+    
+    **Solution**: Obtain a new token by logging in again
+  </Accordion>
+  
+  <Accordion title="Missing Authorization Header">
+    **Error**: `ApiError::Unauthorized`
+    
+    **Cause**: No Authorization header in request
+    
+    **Solution**: Include header: `Authorization: Bearer <token>`
+  </Accordion>
+  
+  <Accordion title="Invalid Bearer Format">
+    **Error**: `ApiError::Unauthorized`
+    
+    **Cause**: Authorization header doesn't start with "Bearer "
+    
+    **Solution**: Ensure header format: `Bearer <token>` with space
+  </Accordion>
+</AccordionGroup>
+
+### Error Response Format
+
+```json
+{
+  "error": "Unauthorized",
+  "message": "Invalid or expired token"
+}
+```
+
+## Security Best Practices
+
+### Secret Key Management
+
+<Steps>
+  <Step title="Generate Strong Secret">
+    Use a cryptographically secure random string:
+    
+    ```bash
+    # Linux/Mac
+    openssl rand -base64 32
+    
+    # Output: "3K7+x9P2qR8mN5vW1yB4tC6hU0jL9fE8dA7sG3kI5oM="
+    ```
+  </Step>
+  
+  <Step title="Store in Environment Variables">
+    Never hardcode secrets in your source code:
+    
+    ```bash
+    # .env (never commit this file)
+    JWT_SECRET=3K7+x9P2qR8mN5vW1yB4tC6hU0jL9fE8dA7sG3kI5oM=
+    ```
+  </Step>
+  
+  <Step title="Use Different Secrets Per Environment">
+    Use different secrets for development, staging, and production:
+    
+    ```bash
+    # .env.development
+    JWT_SECRET=dev-secret-not-for-production
+    
+    # .env.production
+    JWT_SECRET=prod-secret-super-secure-long-random-string
+    ```
+  </Step>
+  
+  <Step title="Rotate Secrets Regularly">
+    In production, rotate JWT secrets periodically (e.g., every 6-12 months).
+  </Step>
+</Steps>
+
+### Token Storage
+
+<Warning>
+**Client-side storage considerations:**
+
+- **localStorage**: Vulnerable to XSS attacks
+- **sessionStorage**: Better than localStorage, cleared on tab close
+- **HttpOnly cookies**: Most secure, not accessible via JavaScript
+- **Memory only**: Most secure but lost on page refresh
+</Warning>
+
+### Token Transmission
+
+- Always use HTTPS in production
+- Never include tokens in URL query parameters
+- Never log tokens in application logs
+- Use Authorization header instead of custom headers
+
+### Expiration Strategy
+
+```rust
+// Short-lived access tokens with refresh tokens (recommended)
+JWT_EXPIRATION=3600  // 1 hour
+
+// Implement refresh token logic
+pub async fn refresh_token(
+    refresh_token: String,
+) -> Result<AuthResponse, ApiError> {
+    // Verify refresh token
+    // Issue new access token
+    // Return new token to client
+}
+```
+
+## Testing JWT Tokens
+
+Test token generation and validation:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::AppConfig;
+
+    #[test]
+    fn test_token_roundtrip() {
+        let config = AppConfig::test_config();
+        
+        let token = create_token(
+            "user123",
+            "test@example.com",
+            "user",
+            &config,
+        ).unwrap();
+        
+        let claims = verify_token(&token, &config).unwrap();
+        
+        assert_eq!(claims.sub, "user123");
+        assert_eq!(claims.email, "test@example.com");
+        assert_eq!(claims.role, "user");
+    }
+    
+    #[test]
+    fn test_expired_token() {
+        let config = AppConfig::test_config();
+        
+        let mut claims = Claims {
+            sub: "user123".to_string(),
+            email: "test@example.com".to_string(),
+            role: "user".to_string(),
+            exp: Utc::now().timestamp() - 1000, // Expired
+            iat: Utc::now().timestamp() - 2000,
+        };
+        
+        let token = encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(config.jwt.secret.as_bytes()),
+        ).unwrap();
+        
+        let result = verify_token(&token, &config);
+        assert!(result.is_err());
+    }
+}
+```
+
+## Related Documentation
+
+<CardGroup cols={2}>
+  <Card title="Authentication" icon="shield" href="/security/authentication">
+    Complete authentication flow with registration and login
+  </Card>
+  <Card title="Authorization" icon="shield-check" href="/security/authorization">
+    Role-based access control with custom extractors
+  </Card>
+</CardGroup>

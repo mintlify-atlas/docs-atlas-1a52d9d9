@@ -1,0 +1,737 @@
+---
+title: Input Validation
+description: Declarative input validation with the validator crate and custom validators
+---
+
+## Overview
+
+Ironclad uses the [`validator`](https://github.com/Keats/validator) crate for declarative input validation. Validation is applied automatically using the `ValidatedJson` extractor, ensuring invalid data never reaches your business logic.
+
+## Validation Architecture
+
+Ironclad implements a multi-layer validation strategy:
+
+```
+1. DTO Validation (Structure & Format)
+   ↓
+2. Custom Validators (Password strength, username format)
+   ↓
+3. Business Logic Validation (Unique email, active account)
+   ↓
+4. Domain Validation (Value Objects)
+```
+
+## ValidatedJson Extractor
+
+The `ValidatedJson` extractor automatically validates DTOs before they reach your handlers:
+
+```rust
+use actix_web::{dev::Payload, web, FromRequest, HttpRequest};
+use futures::future::{ready, LocalBoxFuture, FutureExt};
+use serde::de::DeserializeOwned;
+use validator::Validate;
+use crate::errors::ApiError;
+
+pub struct ValidatedJson<T>(pub T);
+
+impl<T> FromRequest for ValidatedJson<T>
+where
+    T: DeserializeOwned + Validate + 'static,
+{
+    type Error = ApiError;
+    type Future = LocalBoxFuture<'static, Result<Self, Self::Error>>;
+
+    fn from_request(req: &HttpRequest, payload: &mut Payload) -> Self::Future {
+        let json_fut = web::Json::<T>::from_request(req, payload);
+
+        async move {
+            match json_fut.await {
+                Ok(json) => {
+                    // Validate the object
+                    match json.0.validate() {
+                        Ok(_) => Ok(ValidatedJson(json.0)),
+                        Err(errors) => {
+                            // Format validation errors
+                            let error_messages = errors
+                                .field_errors()
+                                .iter()
+                                .map(|(field, errors)| {
+                                    let messages: Vec<String> = errors
+                                        .iter()
+                                        .filter_map(|e| e.message.as_ref().map(|m| m.to_string()))
+                                        .collect();
+                                    format!("{}: {}", field, messages.join(", "))
+                                })
+                                .collect::<Vec<_>>()
+                                .join("; ");
+
+                            Err(ApiError::ValidationError(error_messages))
+                        }
+                    }
+                }
+                Err(e) => Err(ApiError::ValidationError(format!("Invalid JSON: {}", e))),
+            }
+        }
+        .boxed_local()
+    }
+}
+```
+
+See `validated_json.rs:8-51`.
+
+## Using ValidatedJson
+
+### Basic Usage
+
+Simply use `ValidatedJson<T>` instead of `web::Json<T>`:
+
+```rust
+use actix_web::{web, HttpResponse};
+use crate::application::dtos::RegisterUserRequest;
+use crate::shared::ValidatedJson;
+use crate::errors::ApiResult;
+
+pub async fn register(
+    req: ValidatedJson<RegisterUserRequest>,
+) -> ApiResult<HttpResponse> {
+    // req.0 contains the validated data
+    // Validation happens automatically before this code runs
+    
+    Ok(HttpResponse::Created().json(serde_json::json!({
+        "message": "User registered successfully"
+    })))
+}
+```
+
+See `auth_controller.rs:14-20` for a real example.
+
+### What ValidatedJson Does
+
+1. **Deserializes JSON** - Converts request body to Rust struct
+2. **Validates structure** - Ensures all required fields are present
+3. **Validates format** - Checks email format, string lengths, etc.
+4. **Returns errors** - Automatically returns 400 Bad Request with error details
+
+## Validation Decorators
+
+The `validator` crate provides many built-in validation decorators:
+
+### Email Validation
+
+```rust
+use serde::{Deserialize, Serialize};
+use validator::Validate;
+
+#[derive(Debug, Deserialize, Serialize, Validate)]
+pub struct RegisterUserRequest {
+    #[validate(email(message = "Invalid email format"))]
+    pub email: String,
+}
+```
+
+See `auth_dto.rs:8`.
+
+### Length Validation
+
+```rust
+#[derive(Debug, Deserialize, Serialize, Validate)]
+pub struct RegisterUserRequest {
+    #[validate(length(
+        min = 3,
+        max = 50,
+        message = "Username must be between 3 and 50 characters"
+    ))]
+    pub username: String,
+    
+    #[validate(length(
+        min = 8,
+        message = "Password must be at least 8 characters"
+    ))]
+    pub password: String,
+}
+```
+
+See `auth_dto.rs:11-15`.
+
+### Range Validation
+
+```rust
+#[derive(Debug, Deserialize, Serialize, Validate)]
+pub struct CreatePostRequest {
+    #[validate(range(min = 1, max = 100))]
+    pub priority: i32,
+}
+```
+
+### URL Validation
+
+```rust
+#[derive(Debug, Deserialize, Serialize, Validate)]
+pub struct CreateLinkRequest {
+    #[validate(url(message = "Invalid URL format"))]
+    pub website: String,
+}
+```
+
+### Custom Validation Function
+
+```rust
+#[derive(Debug, Deserialize, Serialize, Validate)]
+pub struct CreateUserRequest {
+    #[validate(custom = "validate_username")]
+    pub username: String,
+}
+
+fn validate_username(username: &str) -> Result<(), ValidationError> {
+    if username.contains("admin") {
+        return Err(ValidationError::new("reserved_name"));
+    }
+    Ok(())
+}
+```
+
+### Multiple Validations
+
+Combine multiple validators on a single field:
+
+```rust
+#[derive(Debug, Deserialize, Serialize, Validate)]
+pub struct UpdateProfileRequest {
+    #[validate(length(min = 3, max = 50), custom = "validate_username")]
+    pub username: Option<String>,
+}
+```
+
+## Custom Validators
+
+Ironclad includes custom validators for common security patterns:
+
+### Strong Password Validation
+
+Requires uppercase, lowercase, digit, and special character:
+
+```rust
+use validator::ValidationError;
+
+pub fn validate_strong_password(password: &str) -> Result<(), ValidationError> {
+    let has_uppercase = password.chars().any(|c| c.is_uppercase());
+    let has_lowercase = password.chars().any(|c| c.is_lowercase());
+    let has_digit = password.chars().any(|c| c.is_numeric());
+    let has_special = password.chars().any(|c| !c.is_alphanumeric());
+
+    if has_uppercase && has_lowercase && has_digit && has_special {
+        Ok(())
+    } else {
+        Err(ValidationError::new("weak_password"))
+    }
+}
+```
+
+See `validator/mod.rs:4-15`.
+
+**Password must contain:**
+- At least one uppercase letter (A-Z)
+- At least one lowercase letter (a-z)
+- At least one digit (0-9)
+- At least one special character (!@#$%^&*, etc.)
+
+### Username Validation
+
+Allows only alphanumeric characters, underscores, and hyphens:
+
+```rust
+pub fn validate_username(username: &str) -> Result<(), ValidationError> {
+    let is_valid = username
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-');
+
+    if is_valid {
+        Ok(())
+    } else {
+        Err(ValidationError::new("invalid_username"))
+    }
+}
+```
+
+See `validator/mod.rs:18-28`.
+
+### Using Custom Validators
+
+Apply custom validators in your service layer:
+
+```rust
+use crate::shared::validator::validate_strong_password;
+use crate::errors::ApiError;
+
+pub async fn register(&self, request: RegisterUserRequest) -> Result<AuthResponse, ApiError> {
+    // Validate strong password requirements
+    if validate_strong_password(&request.password).is_err() {
+        return Err(ApiError::ValidationError(
+            "Password does not meet security requirements".to_string()
+        ));
+    }
+    
+    // Continue with registration logic...
+}
+```
+
+See `auth_service.rs:28-30`.
+
+## Validation Examples
+
+### Authentication DTOs
+
+Complete validation for user registration:
+
+```rust
+use serde::{Deserialize, Serialize};
+use validator::Validate;
+
+#[derive(Debug, Deserialize, Serialize, Validate)]
+pub struct RegisterUserRequest {
+    #[validate(email(message = "Invalid email format"))]
+    pub email: String,
+    
+    #[validate(length(
+        min = 3,
+        max = 50,
+        message = "Username must be between 3 and 50 characters"
+    ))]
+    pub username: String,
+    
+    #[validate(length(
+        min = 8,
+        message = "Password must be at least 8 characters"
+    ))]
+    pub password: String,
+}
+```
+
+See `auth_dto.rs:6-16`.
+
+### Login DTO
+
+```rust
+#[derive(Debug, Deserialize, Serialize, Validate)]
+pub struct LoginRequest {
+    #[validate(email(message = "Invalid email format"))]
+    pub email: String,
+    
+    #[validate(length(min = 1, message = "Password is required"))]
+    pub password: String,
+}
+```
+
+See `auth_dto.rs:19-26`.
+
+### Update Profile DTO
+
+Optional fields with validation:
+
+```rust
+#[derive(Debug, Deserialize, Serialize, Validate)]
+pub struct UpdateProfileRequest {
+    #[validate(length(
+        min = 3,
+        max = 50,
+        message = "Username must be between 3 and 50 characters"
+    ))]
+    pub username: Option<String>,
+    
+    #[validate(email(message = "Invalid email format"))]
+    pub email: Option<String>,
+    
+    #[validate(length(
+        min = 8,
+        message = "Password must be at least 8 characters"
+    ))]
+    pub password: Option<String>,
+}
+```
+
+See `auth_dto.rs:29-39`.
+
+### Test Item DTO
+
+Validation for test entities:
+
+```rust
+#[derive(Debug, Deserialize, Serialize, Validate)]
+pub struct CreateTestItemRequest {
+    #[validate(length(
+        min = 1,
+        max = 255,
+        message = "Subject must be between 1 and 255 characters"
+    ))]
+    pub subject: String,
+    
+    #[validate(length(
+        max = 1000,
+        message = "Optional field cannot exceed 1000 characters"
+    ))]
+    pub optional_field: Option<String>,
+}
+```
+
+See `test_item_dto.rs:5-12`.
+
+## Error Response Format
+
+### Single Field Error
+
+When a single field fails validation:
+
+```json
+{
+  "error": "ValidationError",
+  "message": "email: Invalid email format"
+}
+```
+
+### Multiple Field Errors
+
+When multiple fields fail validation:
+
+```json
+{
+  "error": "ValidationError",
+  "message": "email: Invalid email format; username: Username must be between 3 and 50 characters; password: Password must be at least 8 characters"
+}
+```
+
+### Example Request/Response
+
+<CodeGroup>
+```bash Request
+curl -X POST http://localhost:8080/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "invalid-email",
+    "username": "ab",
+    "password": "short"
+  }'
+```
+
+```json Response (400 Bad Request)
+{
+  "error": "ValidationError",
+  "message": "email: Invalid email format; username: Username must be between 3 and 50 characters; password: Password must be at least 8 characters"
+}
+```
+</CodeGroup>
+
+## Business Logic Validation
+
+Some validation requires database access and should be performed in the service layer:
+
+### Unique Email Check
+
+```rust
+pub async fn register(&self, request: RegisterUserRequest) -> Result<AuthResponse, ApiError> {
+    // DTO validation already passed
+    
+    // Check if email already exists (async validation)
+    if self.user_repository.exists_by_email(&request.email).await? {
+        return Err(ApiError::Conflict("User already exists".to_string()));
+    }
+    
+    // Continue with registration...
+}
+```
+
+See `auth_service.rs:33-35`.
+
+### Account Active Check
+
+```rust
+pub async fn login(&self, request: LoginRequest) -> Result<AuthResponse, ApiError> {
+    let user = self
+        .user_repository
+        .get_by_email(&request.email)
+        .await?
+        .ok_or(ApiError::Unauthorized)?;
+
+    // Check if account is active
+    if !user.is_active() {
+        return Err(ApiError::Forbidden("Account is disabled".to_string()));
+    }
+    
+    // Continue with login...
+}
+```
+
+See `auth_service.rs:71-73`.
+
+## Domain Validation (Value Objects)
+
+Value Objects provide type-safe domain validation:
+
+### Email Value Object
+
+```rust
+use crate::errors::DomainError;
+
+pub struct EmailAddress(String);
+
+impl EmailAddress {
+    pub fn new(email: String) -> Result<Self, DomainError> {
+        // Additional business rules beyond format validation
+        if email.ends_with(".invalid") {
+            return Err(DomainError::ValidationError(
+                "Email domain is not allowed".to_string()
+            ));
+        }
+        
+        Ok(Self(email))
+    }
+    
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+    
+    // Create from trusted source (e.g., database)
+    pub fn from_trusted(email: String) -> Self {
+        Self(email)
+    }
+}
+```
+
+### Username Value Object
+
+```rust
+pub struct Username(String);
+
+impl Username {
+    pub fn new(username: String) -> Result<Self, DomainError> {
+        // Business rules for username
+        if username.to_lowercase() == "admin" {
+            return Err(DomainError::ValidationError(
+                "Username is reserved".to_string()
+            ));
+        }
+        
+        Ok(Self(username))
+    }
+    
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+    
+    pub fn from_trusted(username: String) -> Self {
+        Self(username)
+    }
+}
+```
+
+### Using Value Objects
+
+```rust
+pub async fn register(&self, request: RegisterUserRequest) -> Result<AuthResponse, ApiError> {
+    // DTO validation passed
+    // Custom password validation passed
+    // Business logic validation passed
+    
+    // Create validated Value Objects
+    let email_vo = EmailAddress::new(request.email)?;
+    let username_vo = Username::new(request.username)?;
+    
+    // Value Objects guarantee valid data
+    let user = User::new(email_vo, username_vo, password_hash)?;
+    
+    // Continue with registration...
+}
+```
+
+See `auth_service.rs:38-39`.
+
+## Available Validators
+
+The `validator` crate provides many built-in validators:
+
+<Tabs>
+  <Tab title="String">
+    - `email` - Email format
+    - `url` - URL format
+    - `length` - Min/max length
+    - `regex` - Custom regex pattern
+    - `contains` - Contains substring
+    - `custom` - Custom function
+  </Tab>
+  
+  <Tab title="Number">
+    - `range` - Min/max value
+    - `custom` - Custom function
+  </Tab>
+  
+  <Tab title="Collection">
+    - `length` - Min/max items
+    - `custom` - Custom function
+  </Tab>
+  
+  <Tab title="Object">
+    - `nested` - Validate nested objects
+    - `custom` - Custom function
+  </Tab>
+</Tabs>
+
+## Best Practices
+
+### Layer Your Validations
+
+<Steps>
+  <Step title="DTO Validation">
+    Validate structure and format with decorators:
+    
+    ```rust
+    #[validate(email, length(min = 3))]
+    ```
+  </Step>
+  
+  <Step title="Custom Validators">
+    Validate complex rules with custom functions:
+    
+    ```rust
+    validate_strong_password(&password)?;
+    ```
+  </Step>
+  
+  <Step title="Business Logic">
+    Validate with database access in service layer:
+    
+    ```rust
+    if user_repository.exists_by_email(&email).await? {
+        return Err(ApiError::Conflict("Email already exists".to_string()));
+    }
+    ```
+  </Step>
+  
+  <Step title="Domain Validation">
+    Validate business invariants with Value Objects:
+    
+    ```rust
+    let email = EmailAddress::new(email)?;
+    ```
+  </Step>
+</Steps>
+
+### Provide Clear Error Messages
+
+<CodeGroup>
+```rust Good - Specific Message
+#[validate(length(
+    min = 8,
+    message = "Password must be at least 8 characters"
+))]
+pub password: String,
+```
+
+```rust Bad - Generic Message
+#[validate(length(min = 8))]
+pub password: String,
+// Error: "length validation failed"
+```
+</CodeGroup>
+
+### Validate Optional Fields
+
+Optional fields are validated only when present:
+
+```rust
+#[derive(Debug, Deserialize, Serialize, Validate)]
+pub struct UpdateRequest {
+    // Only validated if provided
+    #[validate(email)]
+    pub email: Option<String>,
+    
+    // Only validated if provided
+    #[validate(length(min = 3, max = 50))]
+    pub username: Option<String>,
+}
+```
+
+### Use ValidatedJson Consistently
+
+Always use `ValidatedJson` for input DTOs:
+
+<CodeGroup>
+```rust Good
+pub async fn create_user(
+    req: ValidatedJson<CreateUserRequest>,
+) -> ApiResult<HttpResponse> {
+    // Validation already done
+}
+```
+
+```rust Bad
+pub async fn create_user(
+    req: web::Json<CreateUserRequest>,
+) -> ApiResult<HttpResponse> {
+    // Must manually validate
+    req.0.validate()?;
+}
+```
+</CodeGroup>
+
+## Testing Validation
+
+Test validation rules in unit tests:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use validator::Validate;
+
+    #[test]
+    fn test_valid_registration() {
+        let req = RegisterUserRequest {
+            email: "user@example.com".to_string(),
+            username: "johndoe".to_string(),
+            password: "SecureP@ss123".to_string(),
+        };
+        
+        assert!(req.validate().is_ok());
+    }
+
+    #[test]
+    fn test_invalid_email() {
+        let req = RegisterUserRequest {
+            email: "invalid-email".to_string(),
+            username: "johndoe".to_string(),
+            password: "SecureP@ss123".to_string(),
+        };
+        
+        assert!(req.validate().is_err());
+    }
+
+    #[test]
+    fn test_short_username() {
+        let req = RegisterUserRequest {
+            email: "user@example.com".to_string(),
+            username: "ab".to_string(),
+            password: "SecureP@ss123".to_string(),
+        };
+        
+        let errors = req.validate().unwrap_err();
+        assert!(errors.field_errors().contains_key("username"));
+    }
+
+    #[test]
+    fn test_weak_password() {
+        assert!(validate_strong_password("password").is_err());
+        assert!(validate_strong_password("Password123").is_err()); // No special char
+        assert!(validate_strong_password("SecureP@ss123").is_ok());
+    }
+}
+```
+
+## Related Documentation
+
+<CardGroup cols={2}>
+  <Card title="Authentication" icon="shield" href="/security/authentication">
+    See validation in action in the authentication flow
+  </Card>
+  <Card title="validator Crate" icon="book" href="https://github.com/Keats/validator">
+    Full documentation for the validator crate
+  </Card>
+</CardGroup>

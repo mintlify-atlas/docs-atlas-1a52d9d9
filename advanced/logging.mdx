@@ -1,0 +1,639 @@
+---
+title: Logging
+description: Structured logging with tracing for observability and debugging
+---
+
+Ironclad uses the `tracing` crate for structured, async-aware logging that provides powerful observability for your application.
+
+## Logging Setup
+
+### Basic Configuration
+
+```rust src/main.rs
+use tracing_subscriber;
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    // Configure logging
+    tracing_subscriber::fmt()
+        .without_time()
+        .with_target(false)
+        .with_thread_ids(false)
+        .with_thread_names(false)
+        .with_file(false)
+        .with_line_number(false)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::new("info,actix_server=warn,ironclads=debug")
+        )
+        .init();
+
+    tracing::info!("╔════════════════════════════════════════════════════╗");
+    tracing::info!("║    🚀 Rust Ironclad Framework (DDD Architecture)  ║");
+    tracing::info!("╚════════════════════════════════════════════════════╝");
+    tracing::info!("📍 Server: http://{}:{}", app_config.server.host, app_config.server.port);
+
+    // ... rest of setup
+}
+```
+
+### Configuration Options
+
+<ParamField path="without_time()" type="method">
+  Removes timestamps from log output (useful for systemd or Docker logs that add their own timestamps)
+</ParamField>
+
+<ParamField path="with_target(false)" type="method">
+  Hides the module path in logs (e.g., `ironclad::auth::service`)
+</ParamField>
+
+<ParamField path="with_thread_ids(false)" type="method">
+  Hides thread IDs from log output
+</ParamField>
+
+<ParamField path="with_file(false)" type="method">
+  Hides file names from log output
+</ParamField>
+
+<ParamField path="with_line_number(false)" type="method">
+  Hides line numbers from log output
+</ParamField>
+
+<ParamField path="with_env_filter()" type="method">
+  Sets log level filtering based on environment variables or configuration
+</ParamField>
+
+## Log Levels
+
+### Available Levels
+
+```rust
+tracing::error!("Critical error occurred: {}", error);   // Level 1 - Errors
+tracing::warn!("Warning: potential issue detected");      // Level 2 - Warnings
+tracing::info!("Application started successfully");       // Level 3 - Info
+tracing::debug!("User ID: {}, processing request", id);  // Level 4 - Debug
+tracing::trace!("Detailed trace information");            // Level 5 - Trace
+```
+
+### Log Level Hierarchy
+
+- `error` → Shows only errors
+- `warn` → Shows errors + warnings
+- `info` → Shows errors + warnings + info (default)
+- `debug` → Shows errors + warnings + info + debug
+- `trace` → Shows everything
+
+## Environment-Based Configuration
+
+### Using RUST_LOG Environment Variable
+
+```bash .env
+# Development - verbose logging
+RUST_LOG=debug
+
+# Production - minimal logging
+RUST_LOG=warn
+
+# Custom filtering
+RUST_LOG=info,actix_server=warn,ironclads=debug
+```
+
+### Multiple Module Filtering
+
+```rust
+tracing_subscriber::EnvFilter::new("info,actix_server=warn,ironclads=debug")
+```
+
+This configuration:
+- Sets default level to `info`
+- Reduces `actix_server` noise to `warn` level
+- Increases your app (`ironclads`) to `debug` level
+
+### Running with Custom Log Levels
+
+```bash
+# Debug mode
+RUST_LOG=debug cargo run
+
+# Specific module debugging
+RUST_LOG=ironclads::auth=trace cargo run
+
+# Multiple modules
+RUST_LOG=ironclads::auth=debug,ironclads::db=trace cargo run
+
+# Production mode
+RUST_LOG=error cargo run --release
+```
+
+## Structured Logging
+
+### Basic Logging
+
+```rust
+use tracing::{info, warn, error, debug, trace};
+
+// Simple message
+info!("User logged in");
+
+// With variables
+info!("User {} logged in", username);
+
+// With structured fields
+info!(
+    user_id = %user.id,
+    username = %user.username,
+    "User logged in successfully"
+);
+```
+
+### Structured Fields
+
+```rust
+// Display format (%)
+info!(user_id = %uuid, "Processing request");
+
+// Debug format (?)
+info!(user_data = ?user, "User details");
+
+// Raw value
+info!(count = items.len(), "Items processed");
+
+// Multiple fields
+info!(
+    user_id = %user.id,
+    email = %user.email,
+    action = "login",
+    ip_address = %req.connection_info().peer_addr(),
+    "User authentication"
+);
+```
+
+## Logging in Different Layers
+
+### Controller Layer
+
+```rust
+use tracing::{info, error};
+use actix_web::{web, HttpResponse};
+
+pub async fn login_handler(
+    credentials: web::Json<LoginDto>,
+) -> Result<HttpResponse, ApiError> {
+    info!(
+        email = %credentials.email,
+        "Login attempt"
+    );
+
+    match auth_service.login(credentials.into_inner()).await {
+        Ok(response) => {
+            info!(
+                user_id = %response.user.id,
+                "Login successful"
+            );
+            Ok(HttpResponse::Ok().json(response))
+        }
+        Err(e) => {
+            error!(
+                email = %credentials.email,
+                error = %e,
+                "Login failed"
+            );
+            Err(e)
+        }
+    }
+}
+```
+
+### Service Layer
+
+```rust
+use tracing::{info, warn, debug};
+
+impl AuthService {
+    pub async fn register(&self, dto: RegisterDto) -> ApiResult<AuthResponse> {
+        debug!(
+            email = %dto.email,
+            username = %dto.username,
+            "Starting user registration"
+        );
+
+        // Check if user exists
+        if self.user_exists(&dto.email).await? {
+            warn!(
+                email = %dto.email,
+                "Registration attempt with existing email"
+            );
+            return Err(ApiError::Conflict(
+                format!("User with email {} already exists", dto.email)
+            ));
+        }
+
+        // Create user
+        let user = self.create_user(dto).await?;
+        
+        info!(
+            user_id = %user.id,
+            email = %user.email,
+            "User registered successfully"
+        );
+
+        Ok(AuthResponse {
+            user,
+            token: self.generate_token(&user)?,
+        })
+    }
+}
+```
+
+### Repository Layer
+
+```rust
+use tracing::{debug, error};
+
+impl UserRepository {
+    pub async fn find_by_email(&self, email: &str) -> Result<Option<User>, sqlx::Error> {
+        debug!(email = %email, "Querying user by email");
+
+        match sqlx::query_as!(User, "SELECT * FROM users WHERE email = $1", email)
+            .fetch_optional(&self.pool)
+            .await
+        {
+            Ok(user) => {
+                if user.is_some() {
+                    debug!(email = %email, "User found");
+                } else {
+                    debug!(email = %email, "User not found");
+                }
+                Ok(user)
+            }
+            Err(e) => {
+                error!(
+                    email = %email,
+                    error = %e,
+                    "Database query failed"
+                );
+                Err(e)
+            }
+        }
+    }
+}
+```
+
+## HTTP Request Logging
+
+### TracingLogger Middleware
+
+```rust src/main.rs
+use tracing_actix_web::TracingLogger;
+
+HttpServer::new(move || {
+    App::new()
+        .wrap(MaintenanceMode)
+        .wrap(Cors::default())
+        .wrap(TracingLogger::default())  // Automatic HTTP request/response logging
+        .configure(routes::configure)
+})
+```
+
+### Output Example
+
+```
+INFO HTTP request
+  method: GET
+  uri: /api/users/550e8400-e29b-41d4-a716-446655440000
+  version: HTTP/1.1
+
+INFO HTTP response
+  status: 200
+  latency_ms: 45
+```
+
+## Performance Monitoring
+
+### Measuring Function Duration
+
+```rust
+use tracing::{info, instrument};
+use std::time::Instant;
+
+pub async fn expensive_operation() -> Result<(), ApiError> {
+    let start = Instant::now();
+    
+    // Perform operation
+    process_data().await?;
+    
+    let duration = start.elapsed();
+    info!(
+        duration_ms = duration.as_millis(),
+        "Expensive operation completed"
+    );
+    
+    Ok(())
+}
+```
+
+### Automatic Instrumentation
+
+```rust
+use tracing::instrument;
+
+#[instrument(skip(self))]  // Don't log 'self'
+pub async fn get_user(&self, user_id: Uuid) -> ApiResult<User> {
+    // Function entry/exit automatically logged
+    // with all parameters
+    self.repository.find_by_id(user_id).await
+}
+
+#[instrument(skip(pool), fields(user_id = %user_id))]
+pub async fn find_user(pool: &PgPool, user_id: Uuid) -> Result<User, sqlx::Error> {
+    sqlx::query_as!(User, "SELECT * FROM users WHERE id = $1", user_id)
+        .fetch_one(pool)
+        .await
+}
+```
+
+## Error Logging
+
+### Comprehensive Error Logging
+
+```rust
+use tracing::error;
+
+pub async fn process_payment(amount: f64) -> ApiResult<Payment> {
+    match payment_gateway.charge(amount).await {
+        Ok(payment) => {
+            info!(
+                payment_id = %payment.id,
+                amount = amount,
+                "Payment processed successfully"
+            );
+            Ok(payment)
+        }
+        Err(e) => {
+            error!(
+                amount = amount,
+                error = %e,
+                error_type = ?std::any::type_name_of_val(&e),
+                "Payment processing failed"
+            );
+            Err(ApiError::InternalServerError(
+                "Payment processing failed".to_string()
+            ))
+        }
+    }
+}
+```
+
+### Logging with Context
+
+```rust
+use tracing::{error, warn};
+
+pub async fn update_user(
+    user_id: Uuid,
+    update_data: UpdateUserDto,
+) -> ApiResult<User> {
+    match repository.update(user_id, update_data).await {
+        Ok(user) => Ok(user),
+        Err(e) => {
+            if let Some(db_err) = e.as_database_error() {
+                if db_err.is_unique_violation() {
+                    warn!(
+                        user_id = %user_id,
+                        constraint = db_err.constraint(),
+                        "Unique constraint violation"
+                    );
+                    return Err(ApiError::Conflict("Email already exists".to_string()));
+                }
+            }
+            
+            error!(
+                user_id = %user_id,
+                error = %e,
+                "Failed to update user"
+            );
+            Err(ApiError::DatabaseError(e.to_string()))
+        }
+    }
+}
+```
+
+## Log File Output
+
+### Writing to File
+
+```rust
+use tracing_appender::{non_blocking, rolling};
+use tracing_subscriber::layer::SubscriberExt;
+
+fn init_logging() {
+    let file_appender = rolling::daily("storage/logs", "ironclad.log");
+    let (non_blocking, _guard) = non_blocking(file_appender);
+
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(non_blocking)
+        .with_ansi(false)
+        .finish();
+
+    tracing::subscriber::set_global_default(subscriber)
+        .expect("Failed to set subscriber");
+}
+```
+
+### Multiple Outputs (Console + File)
+
+```rust
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+
+fn init_logging() {
+    let file_appender = rolling::daily("storage/logs", "ironclad.log");
+    let (file_writer, _guard) = non_blocking(file_appender);
+
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer())
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(file_writer)
+                .with_ansi(false)
+        )
+        .init();
+}
+```
+
+## Best Practices
+
+<Tip>
+**What to Log**
+
+- ✅ User authentication events
+- ✅ Database operations (especially failures)
+- ✅ External API calls
+- ✅ Business-critical operations
+- ✅ Error conditions with context
+- ✅ Performance metrics for slow operations
+</Tip>
+
+<Warning>
+**What NOT to Log**
+
+- ❌ Passwords or authentication tokens
+- ❌ Credit card numbers or PII
+- ❌ Full request/response bodies (unless debugging)
+- ❌ Excessive debug logs in production
+- ❌ Sensitive business logic details
+</Warning>
+
+### Logging Sensitive Data
+
+```rust
+// ❌ BAD - logs password
+info!(password = %credentials.password, "Login attempt");
+
+// ✅ GOOD - omits sensitive data
+info!(email = %credentials.email, "Login attempt");
+
+// ✅ GOOD - masks sensitive data
+info!(
+    email = %credentials.email,
+    password_length = credentials.password.len(),
+    "Login attempt"
+);
+```
+
+### Production Logging
+
+```rust
+let env = env::var("ENVIRONMENT").unwrap_or_else(|_| "development".to_string());
+
+let log_level = match env.as_str() {
+    "production" => "warn",
+    "staging" => "info",
+    _ => "debug",
+};
+
+tracing_subscriber::fmt()
+    .with_env_filter(tracing_subscriber::EnvFilter::new(log_level))
+    .init();
+```
+
+## Monitoring and Observability
+
+### Health Check Logging
+
+```rust
+use tracing::info;
+
+pub async fn health_check() -> HttpResponse {
+    info!("Health check requested");
+    
+    // Check database
+    match sqlx::query("SELECT 1").execute(&pool).await {
+        Ok(_) => {
+            info!("Health check passed");
+            HttpResponse::Ok().json(json!({
+                "status": "healthy",
+                "database": "connected"
+            }))
+        }
+        Err(e) => {
+            error!(error = %e, "Health check failed: database error");
+            HttpResponse::ServiceUnavailable().json(json!({
+                "status": "unhealthy",
+                "database": "disconnected"
+            }))
+        }
+    }
+}
+```
+
+### Startup Logging
+
+```rust src/main.rs
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    // Initialize logging first
+    init_logging();
+
+    info!("╔════════════════════════════════════════════════════╗");
+    info!("║    🚀 Rust Ironclad Framework (DDD Architecture)  ║");
+    info!("╚════════════════════════════════════════════════════╝");
+    info!("📍 Server: http://{}:{}", app_config.server.host, app_config.server.port);
+
+    // Database initialization
+    let pg_pool = db::postgres::init_pool(&app_config.db_postgres)
+        .await
+        .expect("Failed to initialize PostgreSQL pool");
+    info!("✅ PostgreSQL connected");
+
+    // MongoDB (optional)
+    if let Some(mongo_config) = &app_config.mongodb {
+        match db::mongo::init_mongodb(mongo_config).await {
+            Ok(_) => info!("✅ MongoDB connected"),
+            Err(e) => warn!("⚠️  MongoDB skipped: {}", e),
+        }
+    }
+
+    info!("🌐 Listening on http://{}", address);
+    info!("🔗 Documentation: http://{}:{}/api/docs", 
+          app_config.server.host, app_config.server.port);
+
+    // Start server
+    HttpServer::new(/* ... */)
+        .bind(&address)?
+        .run()
+        .await
+}
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="No logs appearing">
+    **Problem:** Logs not showing up
+    
+    **Solution:** Check `RUST_LOG` environment variable
+    ```bash
+    # Test with debug level
+    RUST_LOG=debug cargo run
+    
+    # Verify initialization
+    # Ensure tracing_subscriber::fmt().init() is called
+    ```
+  </Accordion>
+
+  <Accordion title="Too many logs in production">
+    **Problem:** Log volume is too high
+    
+    **Solution:** Adjust log levels
+    ```bash
+    # Production
+    RUST_LOG=warn,ironclads=info
+    
+    # Or in code
+    tracing_subscriber::EnvFilter::new("warn")
+    ```
+  </Accordion>
+
+  <Accordion title="Missing structured fields">
+    **Problem:** Structured fields not appearing
+    
+    **Solution:** Use correct format specifiers
+    ```rust
+    // ❌ Wrong
+    info!("user_id: {}", user_id);
+    
+    // ✅ Correct
+    info!(user_id = %user_id, "User action");
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Error Handling" icon="triangle-exclamation" href="/advanced/error-handling">
+    Learn about error types and logging
+  </Card>
+  <Card title="Deployment" icon="rocket" href="/deployment">
+    Deploy with proper logging configuration
+  </Card>
+</CardGroup>

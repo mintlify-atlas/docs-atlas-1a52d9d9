@@ -1,0 +1,422 @@
+---
+title: 'Interfaces Layer'
+description: 'Repository traits defining data access contracts'
+icon: 'plug'
+---
+
+The interfaces layer defines trait contracts for data access without specifying implementation details. This enables dependency inversion and testability.
+
+## Repository Traits
+
+Repository traits abstract data access operations, allowing infrastructure implementations to be swapped without affecting business logic.
+
+### UserRepository
+
+Data access contract for user persistence operations.
+
+<ParamField path="UserRepository" type="trait">
+  Trait defining user data access operations. Requires Send + Sync for async safety.
+</ParamField>
+
+```rust
+#[async_trait]
+pub trait UserRepository: Send + Sync {
+    async fn create(&self, user: &User) -> Result<User, ApiError>;
+    async fn get_by_id(&self, id: &str) -> Result<Option<User>, ApiError>;
+    async fn get_by_email(&self, email: &str) -> Result<Option<User>, ApiError>;
+    async fn get_all(&self) -> Result<Vec<User>, ApiError>;
+    async fn get_paginated(&self, page: i32, per_page: i32) -> Result<(Vec<User>, i32), ApiError>;
+    async fn update(&self, user: &User) -> Result<(), ApiError>;
+    async fn delete(&self, id: &str) -> Result<bool, ApiError>;
+    async fn count(&self) -> Result<i32, ApiError>;
+    async fn exists_by_email(&self, email: &str) -> Result<bool, ApiError>;
+}
+```
+
+#### Methods
+
+**create**
+
+```rust
+async fn create(&self, user: &User) -> Result<User, ApiError>
+```
+
+Persists new user entity and returns the created user with any database-generated fields.
+
+<ParamField path="user" type="&User">
+  Reference to User entity to persist
+</ParamField>
+
+<ResponseField name="result" type="Result<User, ApiError>">
+  Returns created User on success, DatabaseError on failure
+</ResponseField>
+
+**get_by_id**
+
+```rust
+async fn get_by_id(&self, id: &str) -> Result<Option<User>, ApiError>
+```
+
+Retrieves user by unique identifier.
+
+<ParamField path="id" type="&str">
+  UUID string identifier
+</ParamField>
+
+<ResponseField name="result" type="Result<Option<User>, ApiError>">
+  Returns Some(User) if found, None if not found, Error on database failure
+</ResponseField>
+
+**get_by_email**
+
+```rust
+async fn get_by_email(&self, email: &str) -> Result<Option<User>, ApiError>
+```
+
+Retrieves user by email address. Takes plain string instead of EmailAddress value object for flexibility.
+
+<ParamField path="email" type="&str">
+  Email address to search for
+</ParamField>
+
+**Example usage from source** (auth_service.rs:33-35):
+
+```rust
+if self.user_repository.exists_by_email(&request.email).await? {
+    return Err(ApiError::Conflict("User already exists".to_string()));
+}
+```
+
+**get_all**
+
+```rust
+async fn get_all(&self) -> Result<Vec<User>, ApiError>
+```
+
+Retrieves all users without pagination. Should be used sparingly for small datasets.
+
+<ResponseField name="result" type="Result<Vec<User>, ApiError>">
+  Returns vector of all users
+</ResponseField>
+
+**get_paginated**
+
+```rust
+async fn get_paginated(
+    &self, 
+    page: i32, 
+    per_page: i32
+) -> Result<(Vec<User>, i32), ApiError>
+```
+
+Retrieves paginated users with total count for UI pagination.
+
+<ParamField path="page" type="i32">
+  Page number (1-based)
+</ParamField>
+
+<ParamField path="per_page" type="i32">
+  Number of items per page
+</ParamField>
+
+<ResponseField name="result" type="Result<(Vec<User>, i32), ApiError>">
+  Returns tuple of (users vector, total count)
+</ResponseField>
+
+**Example usage from source** (user_service.rs:53-56):
+
+```rust
+let (users, total) = self
+    .user_repository
+    .get_paginated(page, per_page)
+    .await?;
+```
+
+**update**
+
+```rust
+async fn update(&self, user: &User) -> Result<(), ApiError>
+```
+
+Updates existing user entity. Implementation should update all mutable fields.
+
+<ParamField path="user" type="&User">
+  User entity with updated values
+</ParamField>
+
+<ResponseField name="result" type="Result<(), ApiError>">
+  Returns () on success, Error on failure
+</ResponseField>
+
+**delete**
+
+```rust
+async fn delete(&self, id: &str) -> Result<bool, ApiError>
+```
+
+Deletes user by ID. Returns boolean indicating whether deletion occurred.
+
+<ParamField path="id" type="&str">
+  UUID of user to delete
+</ParamField>
+
+<ResponseField name="result" type="Result<bool, ApiError>">
+  Returns true if user was deleted, false if not found
+</ResponseField>
+
+**Example usage from source** (user_service.rs:164-168):
+
+```rust
+let deleted = self.user_repository.delete(user_id).await?;
+
+if !deleted {
+    return Err(ApiError::NotFound("User not found".to_string()));
+}
+```
+
+**count**
+
+```rust
+async fn count(&self) -> Result<i32, ApiError>
+```
+
+Returns total number of users in system.
+
+<ResponseField name="result" type="Result<i32, ApiError>">
+  Returns total count
+</ResponseField>
+
+**exists_by_email**
+
+```rust
+async fn exists_by_email(&self, email: &str) -> Result<bool, ApiError>
+```
+
+Efficient check for email existence without loading full entity.
+
+<ParamField path="email" type="&str">
+  Email address to check
+</ParamField>
+
+<ResponseField name="result" type="Result<bool, ApiError>">
+  Returns true if email exists, false otherwise
+</ResponseField>
+
+---
+
+### TestItemRepository
+
+Data access contract for test item persistence operations.
+
+<ParamField path="TestItemRepository" type="trait">
+  Trait defining test item data access operations. Requires Send + Sync for async safety.
+</ParamField>
+
+```rust
+#[async_trait]
+pub trait TestItemRepository: Send + Sync {
+    async fn create(&self, item: &TestItem) -> Result<TestItem, ApiError>;
+    async fn get_by_id(&self, id: &str) -> Result<Option<TestItem>, ApiError>;
+    async fn get_all(&self) -> Result<Vec<TestItem>, ApiError>;
+    async fn get_paginated(&self, page: i32, per_page: i32) -> Result<(Vec<TestItem>, i32), ApiError>;
+    async fn update(&self, item: &TestItem) -> Result<(), ApiError>;
+    async fn delete(&self, id: &str) -> Result<bool, ApiError>;
+    async fn count(&self) -> Result<i32, ApiError>;
+}
+```
+
+#### Methods
+
+**create**
+
+```rust
+async fn create(&self, item: &TestItem) -> Result<TestItem, ApiError>
+```
+
+Persists new test item and returns created entity.
+
+<ParamField path="item" type="&TestItem">
+  Test item entity to create
+</ParamField>
+
+<ResponseField name="result" type="Result<TestItem, ApiError>">
+  Returns created TestItem on success
+</ResponseField>
+
+**Example usage from source** (test_item_service.rs:22-25):
+
+```rust
+let item = TestItem::new(request.subject, request.optional_field);
+let created_item = self.repository.create(&item).await?;
+Ok(created_item.to_response())
+```
+
+**get_by_id**
+
+```rust
+async fn get_by_id(&self, id: &str) -> Result<Option<TestItem>, ApiError>
+```
+
+Retrieves test item by ID.
+
+<ParamField path="id" type="&str">
+  UUID string identifier
+</ParamField>
+
+<ResponseField name="result" type="Result<Option<TestItem>, ApiError>">
+  Returns Some(TestItem) if found, None otherwise
+</ResponseField>
+
+**get_all**
+
+```rust
+async fn get_all(&self) -> Result<Vec<TestItem>, ApiError>
+```
+
+Retrieves all test items.
+
+**get_paginated**
+
+```rust
+async fn get_paginated(
+    &self, 
+    page: i32, 
+    per_page: i32
+) -> Result<(Vec<TestItem>, i32), ApiError>
+```
+
+Retrieves paginated test items with total count.
+
+<ParamField path="page" type="i32">
+  Page number (1-based)
+</ParamField>
+
+<ParamField path="per_page" type="i32">
+  Items per page
+</ParamField>
+
+<ResponseField name="result" type="Result<(Vec<TestItem>, i32), ApiError>">
+  Returns tuple of (items, total_count)
+</ResponseField>
+
+**Example usage from source** (test_item_service.rs:40-43):
+
+```rust
+let (items, total) = self.repository.get_paginated(page, per_page).await?;
+let item_responses: Vec<TestItemResponse> = items.into_iter().map(|i| i.to_response()).collect();
+
+Ok(PaginatedTestItemsResponse::new(item_responses, total, page, per_page))
+```
+
+**update**
+
+```rust
+async fn update(&self, item: &TestItem) -> Result<(), ApiError>
+```
+
+Updates existing test item.
+
+<ParamField path="item" type="&TestItem">
+  Test item with updated fields
+</ParamField>
+
+**delete**
+
+```rust
+async fn delete(&self, id: &str) -> Result<bool, ApiError>
+```
+
+Deletes test item by ID.
+
+<ParamField path="id" type="&str">
+  UUID of item to delete
+</ParamField>
+
+<ResponseField name="result" type="Result<bool, ApiError>">
+  Returns true if deleted, false if not found
+</ResponseField>
+
+**Example usage from source** (test_item_service.rs:64-69):
+
+```rust
+let deleted = self.repository.delete(id).await?;
+if !deleted {
+    return Err(ApiError::NotFound("Test item not found".to_string()));
+}
+Ok(())
+```
+
+**count**
+
+```rust
+async fn count(&self) -> Result<i32, ApiError>
+```
+
+Returns total number of test items.
+
+---
+
+## Design Principles
+
+### Dependency Inversion
+
+Traits allow high-level application logic to depend on abstractions rather than concrete implementations. Infrastructure depends on interfaces, not vice versa.
+
+### Testability
+
+Traits enable mock implementations for testing:
+
+```rust
+struct MockUserRepository {
+    users: Mutex<Vec<User>>,
+}
+
+#[async_trait]
+impl UserRepository for MockUserRepository {
+    async fn create(&self, user: &User) -> Result<User, ApiError> {
+        self.users.lock().unwrap().push(user.clone());
+        Ok(user.clone())
+    }
+    // ...
+}
+```
+
+### Async Trait
+
+All repository methods are async and use the `async_trait` macro for ergonomic async trait definitions.
+
+### Error Handling
+
+All methods return `Result<T, ApiError>` for consistent error handling across layers.
+
+### Send + Sync Bounds
+
+Traits require `Send + Sync` to ensure implementations are safe for concurrent async access.
+
+---
+
+## Implementation Notes
+
+### String vs Value Objects
+
+Repository methods take plain `&str` for lookup parameters (like email) rather than value objects. This provides flexibility and avoids forcing callers to construct value objects for queries.
+
+### Option Return Types
+
+Getter methods return `Option<T>` to distinguish between "not found" (None) and database errors (Err).
+
+### Boolean Delete Returns
+
+Delete methods return `bool` to indicate whether the entity existed, allowing callers to handle not-found cases.
+
+### Pagination Tuples
+
+Paginated queries return `(Vec<T>, i32)` tuples containing both results and total count for building pagination UIs.
+
+---
+
+## Related Documentation
+
+- [Infrastructure Layer](/api/infrastructure) - PostgreSQL implementations of these traits
+- [Application Layer](/api/application) - Services that use repository traits
+- [Domain Layer](/api/domain) - Entity types managed by repositories

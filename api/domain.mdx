@@ -1,0 +1,468 @@
+---
+title: 'Domain Layer'
+description: 'Entities, value objects, and core business logic'
+icon: 'cube'
+---
+
+The domain layer contains pure business logic with entities and value objects that enforce invariants and encapsulate domain rules.
+
+## Entities
+
+Entities represent core business concepts with unique identity and lifecycle.
+
+### User
+
+Core user entity with authentication, authorization, and profile management.
+
+<ParamField path="User" type="struct">
+  Domain entity representing a user in the system.
+</ParamField>
+
+#### Structure
+
+```rust
+pub struct User {
+    pub id: String,
+    pub email: EmailAddress,
+    pub username: Username,
+    pub password_hash: String,
+    pub role: Role,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+```
+
+<ParamField path="id" type="String">
+  UUID identifier generated on entity creation
+</ParamField>
+
+<ParamField path="email" type="EmailAddress">
+  Email value object with domain validation
+</ParamField>
+
+<ParamField path="username" type="Username">
+  Username value object with format validation
+</ParamField>
+
+<ParamField path="password_hash" type="String">
+  Bcrypt hashed password (never store plain text)
+</ParamField>
+
+<ParamField path="role" type="Role">
+  User role enum (Admin, User, Moderator, Premium)
+</ParamField>
+
+<ParamField path="is_active" type="bool">
+  Account activation status
+</ParamField>
+
+#### Smart Constructors
+
+Constructors enforce invariants and return Result for safe creation.
+
+**new**
+
+```rust
+pub fn new(
+    email: EmailAddress, 
+    username: Username, 
+    password_hash: String
+) -> Result<Self, DomainError>
+```
+
+Creates new user with default User role and active status. Generates UUID and sets timestamps.
+
+**new_with_role**
+
+```rust
+pub fn new_with_role(
+    email: EmailAddress,
+    username: Username,
+    password_hash: String,
+    role: Role
+) -> Result<Self, DomainError>
+```
+
+Creates user with specific role.
+
+#### Business Logic Methods
+
+Methods that encapsulate domain rules and queries.
+
+```rust
+pub fn is_admin(&self) -> bool
+pub fn can_moderate(&self) -> bool
+pub fn is_active(&self) -> bool
+```
+
+**Example from source** (user.rs:86-96):
+
+```rust
+pub fn is_admin(&self) -> bool {
+    self.role.is_admin()
+}
+
+pub fn can_moderate(&self) -> bool {
+    self.role.can_moderate()
+}
+```
+
+#### Mutation Methods
+
+Mutation methods automatically update the updated_at timestamp.
+
+```rust
+pub fn update_email(&mut self, email: EmailAddress)
+pub fn update_username(&mut self, username: Username)
+pub fn update_password_hash(&mut self, password_hash: String)
+pub fn change_role(&mut self, role: Role)
+pub fn activate(&mut self)
+pub fn deactivate(&mut self)
+```
+
+**Example from source** (user.rs:102-105):
+
+```rust
+pub fn update_email(&mut self, email: EmailAddress) {
+    self.email = email;
+    self.updated_at = Utc::now();
+}
+```
+
+#### Conversions
+
+**to_response**
+
+```rust
+pub fn to_response(&self) -> UserResponse
+```
+
+Converts entity to DTO, excluding sensitive data like password_hash.
+
+#### SQLx Integration
+
+Implements FromRow for automatic deserialization from database:
+
+```rust
+impl sqlx::FromRow<'_, PgRow> for User {
+    fn from_row(row: &PgRow) -> Result<Self, sqlx::Error> {
+        // Uses from_trusted for value objects from DB
+        Ok(User {
+            email: EmailAddress::from_trusted(row.try_get("email")?),
+            username: Username::from_trusted(row.try_get("username")?),
+            // ...
+        })
+    }
+}
+```
+
+---
+
+### TestItem
+
+Simple entity demonstrating CRUD patterns.
+
+<ParamField path="TestItem" type="struct">
+  Example entity for testing and demonstration.
+</ParamField>
+
+#### Structure
+
+```rust
+pub struct TestItem {
+    pub id: String,
+    pub subject: String,
+    pub optional_field: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+```
+
+#### Methods
+
+**new**
+
+```rust
+pub fn new(subject: String, optional_field: Option<String>) -> Self
+```
+
+Creates new test item with generated UUID and current timestamps.
+
+**update_subject**
+
+```rust
+pub fn update_subject(&mut self, subject: String)
+```
+
+Updates subject and refreshes updated_at timestamp.
+
+**update_optional_field**
+
+```rust
+pub fn update_optional_field(&mut self, optional_field: Option<String>)
+```
+
+Updates optional field and refreshes timestamp.
+
+**to_response**
+
+```rust
+pub fn to_response(&self) -> TestItemResponse
+```
+
+Converts entity to response DTO.
+
+---
+
+### Claims
+
+JWT claims entity for authentication tokens.
+
+<ParamField path="Claims" type="struct">
+  JWT token claims for user authentication.
+</ParamField>
+
+#### Structure
+
+```rust
+pub struct Claims {
+    pub sub: String,      // Subject (user ID)
+    pub email: String,
+    pub role: String,
+    pub exp: i64,         // Expiration timestamp
+    pub iat: i64,         // Issued at timestamp
+}
+```
+
+#### Methods
+
+**new**
+
+```rust
+pub fn new(user_id: String, email: String, role: String, exp: i64) -> Self
+```
+
+Creates claims with current timestamp for iat.
+
+**is_admin**
+
+```rust
+pub fn is_admin(&self) -> bool
+```
+
+Checks if role is "admin".
+
+**has_role**
+
+```rust
+pub fn has_role(&self, required_role: &str) -> bool
+```
+
+Checks for specific role.
+
+**has_any_role**
+
+```rust
+pub fn has_any_role(&self, roles: &[&str]) -> bool
+```
+
+Checks if user has any of the specified roles.
+
+---
+
+## Value Objects
+
+Value objects encapsulate domain concepts with validation and are immutable.
+
+### EmailAddress
+
+Validated email address value object.
+
+<ParamField path="EmailAddress" type="struct">
+  Newtype wrapper around String with email validation.
+</ParamField>
+
+#### Methods
+
+**new**
+
+```rust
+pub fn new(value: String) -> Result<Self, DomainError>
+```
+
+Smart constructor with validation:
+- Cannot be empty
+- Must contain '@' symbol
+
+**Example from source** (email_address.rs:9-14):
+
+```rust
+if value.trim().is_empty() || !value.contains('@') {
+    return Err(DomainError::Validation("Invalid email format".into()));
+}
+Ok(Self(value))
+```
+
+**from_trusted**
+
+```rust
+pub fn from_trusted(value: String) -> Self
+```
+
+Creates EmailAddress without validation, used when loading from trusted sources like database.
+
+**as_str**
+
+```rust
+pub fn as_str(&self) -> &str
+```
+
+Returns string reference to inner value.
+
+---
+
+### Username
+
+Validated username value object.
+
+<ParamField path="Username" type="struct">
+  Newtype wrapper around String with username validation.
+</ParamField>
+
+#### Methods
+
+**new**
+
+```rust
+pub fn new(value: String) -> Result<Self, DomainError>
+```
+
+Smart constructor using shared validator for username format rules.
+
+**from_trusted**
+
+```rust
+pub fn from_trusted(value: String) -> Self
+```
+
+Creates Username without validation for trusted sources.
+
+**as_str**
+
+```rust
+pub fn as_str(&self) -> &str
+```
+
+Returns string reference to inner value.
+
+---
+
+### Role
+
+User role enumeration with permission logic.
+
+<ParamField path="Role" type="enum">
+  User role with four variants: Admin, User, Moderator, Premium.
+</ParamField>
+
+#### Variants
+
+```rust
+pub enum Role {
+    Admin,
+    User,
+    Moderator,
+    Premium,
+}
+```
+
+#### Methods
+
+**as_str**
+
+```rust
+pub fn as_str(&self) -> &str
+```
+
+Converts role to lowercase string representation.
+
+**from_str**
+
+```rust
+pub fn from_str(s: &str) -> Option<Self>
+```
+
+Parses string to Role variant (case-insensitive). Returns None for invalid values.
+
+**Example from source** (role.rs:23-31):
+
+```rust
+match s.to_lowercase().as_str() {
+    "admin" => Some(Role::Admin),
+    "user" => Some(Role::User),
+    "moderator" => Some(Role::Moderator),
+    "premium" => Some(Role::Premium),
+    _ => None,
+}
+```
+
+**is_admin**
+
+```rust
+pub fn is_admin(&self) -> bool
+```
+
+Returns true only for Admin role.
+
+**can_moderate**
+
+```rust
+pub fn can_moderate(&self) -> bool
+```
+
+Returns true for Admin and Moderator roles.
+
+**Example from source** (role.rs:37-39):
+
+```rust
+pub fn can_moderate(&self) -> bool {
+    matches!(self, Role::Admin | Role::Moderator)
+}
+```
+
+#### Trait Implementations
+
+```rust
+impl Default for Role           // Returns Role::User
+impl Display for Role           // Uses as_str()
+impl From<Role> for String      // Converts to String
+```
+
+---
+
+## Design Patterns
+
+### Smart Constructors
+
+All value objects and entities use smart constructors that return `Result` to enforce invariants at creation time.
+
+### Encapsulation
+
+Value objects wrap primitives to provide type safety and domain-specific validation.
+
+### Immutability
+
+Value objects are immutable. Entities use mutation methods that update timestamps automatically.
+
+### Separation from Infrastructure
+
+Domain types have no dependencies on web frameworks or databases (except SQLx FromRow for convenience).
+
+---
+
+## Related Documentation
+
+- [Application Layer](/api/application) - Services that orchestrate domain entities
+- [Infrastructure Layer](/api/infrastructure) - Persistence implementations
+- [Interfaces Layer](/api/interfaces) - Repository trait definitions

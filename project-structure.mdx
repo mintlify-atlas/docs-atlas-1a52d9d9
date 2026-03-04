@@ -1,0 +1,618 @@
+---
+title: Project Structure
+description: Understanding the directory structure and architecture of Rust Ironclad
+---
+
+Ironclad follows a Domain-Driven Design (DDD) architecture with clear separation of concerns. This guide explains how the codebase is organized and where to find different components.
+
+## Overview
+
+Ironclad uses a clean 5-layer architecture:
+
+```
+┌─────────────────────────────────────┐
+│  Routes Layer                       │ ← HTTP Routing
+├─────────────────────────────────────┤
+│  Infrastructure Layer               │ ← HTTP, Extractors, Controllers
+├─────────────────────────────────────┤
+│  Application Layer                  │ ← Services, DTOs, Use Cases
+├─────────────────────────────────────┤
+│  Domain Layer                       │ ← Entities, Value Objects, Business Logic
+├─────────────────────────────────────┤
+│  Interfaces Layer                   │ ← Trait Definitions (Repository Pattern)
+└─────────────────────────────────────┘
+```
+
+## Directory Structure
+
+Here's the complete project structure:
+
+```
+ironclad/
+├── Cargo.toml              # Project dependencies and configuration
+├── Cargo.lock              # Dependency lock file
+├── .env.example            # Environment variables template
+├── LICENSE                 # Project license
+├── README.md               # Project documentation
+├── migrations/             # Database migration files
+│   ├── 001_create_users_table.sql
+│   ├── 002_add_role_to_users.sql
+│   └── 003_create_test_table.sql
+├── storage/                # Runtime storage
+│   └── framework/          # Framework files
+│       └── maintenance.json
+└── src/                    # Source code
+    ├── main.rs             # API server entry point
+    ├── application/        # Application layer
+    │   ├── dtos/           # Data Transfer Objects
+    │   │   ├── auth_dto.rs
+    │   │   ├── mod.rs
+    │   │   └── test_item_dto.rs
+    │   ├── services/       # Business use cases
+    │   │   ├── auth_service.rs
+    │   │   ├── user_service.rs
+    │   │   ├── test_item_service.rs
+    │   │   └── mod.rs
+    │   └── mod.rs
+    ├── bootstrap/          # Application bootstrap
+    │   ├── app_state.rs    # Dependency injection container
+    │   ├── providers.rs    # Service providers
+    │   ├── macros.rs       # Utility macros
+    │   └── mod.rs
+    ├── cli/                # CLI tool
+    │   ├── main.rs         # CLI entry point
+    │   └── mod.rs
+    ├── config/             # Configuration management
+    │   ├── mod.rs          # Config structs and loading
+    │   └── validators.rs   # Config validation
+    ├── db/                 # Database connections
+    │   ├── postgres.rs     # PostgreSQL connection
+    │   ├── mongo.rs        # MongoDB connection (optional)
+    │   └── mod.rs
+    ├── domain/             # Domain layer
+    │   ├── entities/       # Domain entities
+    │   │   ├── user.rs
+    │   │   ├── test_item.rs
+    │   │   └── mod.rs
+    │   ├── value_objects/  # Value objects with validation
+    │   │   ├── role.rs
+    │   │   ├── email_address.rs
+    │   │   ├── username.rs
+    │   │   └── mod.rs
+    │   └── mod.rs
+    ├── errors/             # Error definitions
+    │   └── mod.rs          # Custom error types
+    ├── infrastructure/     # Infrastructure layer
+    │   ├── http/           # HTTP infrastructure
+    │   │   ├── authentication.rs  # Auth extractors
+    │   │   ├── controllers/       # HTTP controllers
+    │   │   │   ├── auth_controller.rs
+    │   │   │   ├── user_controller.rs
+    │   │   │   ├── test_item_controller.rs
+    │   │   │   ├── health_controller.rs
+    │   │   │   └── mod.rs
+    │   │   ├── handlers/          # Error handlers
+    │   │   │   ├── not_found.rs
+    │   │   │   └── mod.rs
+    │   │   └── mod.rs
+    │   ├── persistence/    # Data persistence
+    │   │   ├── postgres/   # PostgreSQL repositories
+    │   │   │   ├── user_repository.rs
+    │   │   │   ├── test_item_repository.rs
+    │   │   │   └── mod.rs
+    │   │   └── mod.rs
+    │   └── mod.rs
+    ├── interfaces/         # Interface definitions
+    │   ├── repositories/   # Repository traits
+    │   │   ├── user_repository.rs
+    │   │   ├── test_item_repository.rs
+    │   │   └── mod.rs
+    │   └── mod.rs
+    ├── middleware/         # HTTP middleware
+    │   ├── maintenance.rs  # Maintenance mode
+    │   ├── rate_limit.rs   # Rate limiting
+    │   └── mod.rs
+    ├── routes/             # Route definitions
+    │   ├── api.rs          # API routes configuration
+    │   └── mod.rs
+    ├── shared/             # Shared utilities
+    │   ├── extractors/     # Custom extractors
+    │   │   ├── validated_json.rs
+    │   │   └── mod.rs
+    │   ├── validator/      # Validation utilities
+    │   │   └── mod.rs
+    │   └── mod.rs
+    └── utils/              # Utility functions
+        ├── auth.rs         # Authentication utilities
+        ├── jwt.rs          # JWT token handling
+        └── mod.rs
+```
+
+## Layer Breakdown
+
+### 1. Routes Layer (`src/routes/`)
+
+Defines HTTP routes and maps them to controllers.
+
+```rust src/routes/api.rs
+pub fn configure(cfg: &mut web::ServiceConfig) {
+    cfg.service(
+        web::scope("/api")
+            .service(
+                web::scope("/auth")
+                    .route("/register", web::post().to(AuthController::register))
+                    .route("/login", web::post().to(AuthController::login))
+            )
+            .service(
+                web::scope("/user")
+                    .route("/profile", web::get().to(UserController::get_profile))
+                    .route("/all", web::get().to(UserController::get_all_users))
+            )
+    );
+}
+```
+
+**When to modify:**
+- Adding new endpoints
+- Changing URL paths
+- Configuring route-specific middleware
+
+### 2. Infrastructure Layer (`src/infrastructure/`)
+
+Handles HTTP requests, responses, and external system interactions.
+
+#### Controllers (`src/infrastructure/http/controllers/`)
+
+Controllers receive HTTP requests and delegate to services:
+
+```rust src/infrastructure/http/controllers/auth_controller.rs
+pub struct AuthController;
+
+impl AuthController {
+    pub async fn register(
+        service: web::Data<Arc<AuthService>>,
+        req: ValidatedJson<RegisterUserRequest>,
+    ) -> ApiResult<HttpResponse> {
+        let response = service.register(req.0).await?;
+        Ok(HttpResponse::Created().json(response))
+    }
+}
+```
+
+**Responsibilities:**
+- Extract data from HTTP requests
+- Call application services
+- Return HTTP responses
+- Handle HTTP-specific concerns
+
+#### Persistence (`src/infrastructure/persistence/`)
+
+Implements repository traits with actual database queries:
+
+```rust src/infrastructure/persistence/postgres/user_repository.rs
+pub struct PostgresUserRepository {
+    pool: PgPool,
+}
+
+#[async_trait]
+impl UserRepository for PostgresUserRepository {
+    async fn find_by_id(&self, id: &str) -> Result<User, RepositoryError> {
+        let user = sqlx::query_as::<_, User>(
+            "SELECT * FROM users WHERE id = $1"
+        )
+        .bind(id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(user)
+    }
+}
+```
+
+**When to modify:**
+- Adding new database queries
+- Implementing new repository methods
+- Changing data access patterns
+
+### 3. Application Layer (`src/application/`)
+
+Orchestrates business logic and coordinates between layers.
+
+#### Services (`src/application/services/`)
+
+Implement use cases and business workflows:
+
+```rust src/application/services/user_service.rs
+pub struct UserService {
+    repository: Arc<dyn UserRepository>,
+}
+
+impl UserService {
+    pub async fn get_user_by_id(&self, id: &str) -> Result<UserResponse, ApiError> {
+        let user = self.repository.find_by_id(id).await?;
+        Ok(user.to_response())
+    }
+}
+```
+
+**Responsibilities:**
+- Coordinate business operations
+- Orchestrate multiple repositories
+- Transform between domain and DTOs
+- Enforce application-level business rules
+
+#### DTOs (`src/application/dtos/`)
+
+Data Transfer Objects for API communication:
+
+```rust src/application/dtos/auth_dto.rs
+#[derive(Debug, Deserialize, Validate)]
+pub struct RegisterUserRequest {
+    #[validate(email(message = "Invalid email format"))]
+    pub email: String,
+    
+    #[validate(length(min = 3, max = 20))]
+    pub username: String,
+    
+    #[validate(length(min = 8))]
+    pub password: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UserResponse {
+    pub id: String,
+    pub email: String,
+    pub username: String,
+    pub role: String,
+    pub is_active: bool,
+    pub created_at: String,
+    pub updated_at: String,
+}
+```
+
+**When to modify:**
+- Adding new API request/response formats
+- Changing validation rules
+- Adding new use cases
+
+### 4. Domain Layer (`src/domain/`)
+
+Contains pure business logic independent of frameworks.
+
+#### Entities (`src/domain/entities/`)
+
+Core business objects with behavior:
+
+```rust src/domain/entities/user.rs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct User {
+    pub id: String,
+    pub email: EmailAddress,
+    pub username: Username,
+    pub password_hash: String,
+    pub role: Role,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl User {
+    pub fn new(
+        email: EmailAddress,
+        username: Username,
+        password_hash: String
+    ) -> Result<Self, DomainError> {
+        let now = Utc::now();
+        Ok(Self {
+            id: Uuid::new_v4().to_string(),
+            email,
+            username,
+            password_hash,
+            role: Role::default(),
+            is_active: true,
+            created_at: now,
+            updated_at: now,
+        })
+    }
+    
+    pub fn is_admin(&self) -> bool {
+        self.role.is_admin()
+    }
+    
+    pub fn deactivate(&mut self) {
+        self.is_active = false;
+        self.updated_at = Utc::now();
+    }
+}
+```
+
+**Responsibilities:**
+- Encapsulate business rules
+- Protect invariants
+- Provide domain operations
+- No framework dependencies
+
+#### Value Objects (`src/domain/value_objects/`)
+
+Immutable objects with validation:
+
+```rust src/domain/value_objects/email_address.rs
+pub struct EmailAddress(String);
+
+impl EmailAddress {
+    pub fn new(email: String) -> Result<Self, DomainError> {
+        if !email.contains('@') || !email.contains('.') {
+            return Err(DomainError::InvalidEmail);
+        }
+        Ok(Self(email))
+    }
+    
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+```
+
+**When to modify:**
+- Adding new business entities
+- Changing business rules
+- Adding domain validations
+
+### 5. Interfaces Layer (`src/interfaces/`)
+
+Defines contracts between layers using traits.
+
+```rust src/interfaces/repositories/user_repository.rs
+#[async_trait]
+pub trait UserRepository: Send + Sync {
+    async fn find_by_id(&self, id: &str) -> Result<User, RepositoryError>;
+    async fn find_by_email(&self, email: &str) -> Result<User, RepositoryError>;
+    async fn create(&self, user: &User) -> Result<User, RepositoryError>;
+    async fn update(&self, user: &User) -> Result<User, RepositoryError>;
+    async fn delete(&self, id: &str) -> Result<(), RepositoryError>;
+}
+```
+
+**Benefits:**
+- Enables testing with mocks
+- Allows swapping implementations
+- Decouples layers
+
+**When to modify:**
+- Adding new repository operations
+- Defining new service interfaces
+
+## Supporting Directories
+
+### Configuration (`src/config/`)
+
+Manages application configuration:
+
+```rust src/config/mod.rs
+#[derive(Debug, Clone)]
+pub struct AppConfig {
+    pub server: ServerConfig,
+    pub db_postgres: PostgresConfig,
+    pub mongodb: Option<MongoDbConfig>,
+    pub jwt: JwtConfig,
+    pub bcrypt: BcryptConfig,
+}
+
+impl AppConfig {
+    pub fn from_env() -> Result<Self, ConfigError> {
+        dotenv::dotenv().ok();
+        // Load from environment variables
+    }
+}
+```
+
+### Database (`src/db/`)
+
+Initializes database connections:
+
+```rust src/db/postgres.rs
+pub async fn init_pool(config: &PostgresConfig) -> Result<PgPool, sqlx::Error> {
+    PgPoolOptions::new()
+        .max_connections(config.max_connections)
+        .connect(&config.url)
+        .await
+}
+```
+
+### Middleware (`src/middleware/`)
+
+HTTP middleware for cross-cutting concerns:
+
+- `maintenance.rs` - Maintenance mode handling
+- `rate_limit.rs` - Rate limiting configuration
+
+### Utilities (`src/utils/`)
+
+Helper functions:
+
+- `auth.rs` - Password hashing with bcrypt
+- `jwt.rs` - JWT token creation and validation
+
+### Bootstrap (`src/bootstrap/`)
+
+Application initialization and dependency injection:
+
+```rust src/bootstrap/app_state.rs
+pub struct AppState {
+    pub config: AppConfig,
+    pub pool: PgPool,
+    pub auth_service: Arc<AuthService>,
+    pub user_service: Arc<UserService>,
+}
+
+impl AppState {
+    pub fn new(config: AppConfig, pool: PgPool) -> Self {
+        // Initialize all services with dependencies
+    }
+}
+```
+
+## Design Patterns
+
+### Repository Pattern
+
+Abstracts data access behind interfaces:
+
+```
+Service → Repository Trait → Repository Implementation → Database
+```
+
+### Dependency Injection
+
+Services receive dependencies through constructors:
+
+```rust
+pub struct AuthService {
+    user_repository: Arc<dyn UserRepository>,
+    jwt_secret: String,
+}
+```
+
+### Value Objects
+
+Encapsulate validation and ensure type safety:
+
+```rust
+let email = EmailAddress::new("user@example.com".to_string())?;
+let username = Username::new("john_doe".to_string())?;
+let user = User::new(email, username, password_hash)?;
+```
+
+### Extractors
+
+Authentication and validation extractors:
+
+```rust
+pub async fn get_profile(
+    service: web::Data<Arc<UserService>>,
+    user: AuthUser, // Automatically validates JWT
+) -> ApiResult<HttpResponse> {
+    // user.id, user.email, user.role are available
+}
+```
+
+## Best Practices
+
+<Note>
+  **Domain Independence**: The domain layer should never depend on infrastructure. Business logic should be pure and framework-agnostic.
+</Note>
+
+<Note>
+  **Single Responsibility**: Each layer has a specific purpose. Controllers handle HTTP, services orchestrate use cases, repositories handle data access.
+</Note>
+
+<Warning>
+  **Avoid Circular Dependencies**: Services should not depend on controllers. Repositories should not depend on services. Keep dependencies flowing downward.
+</Warning>
+
+## Adding New Features
+
+When adding a new feature, follow this order:
+
+<Steps>
+  <Step title="Define domain entities">
+    Create entities and value objects in `src/domain/`:
+    
+    ```rust src/domain/entities/product.rs
+    pub struct Product {
+        pub id: String,
+        pub name: String,
+        pub price: Money,
+    }
+    ```
+  </Step>
+  
+  <Step title="Define repository interface">
+    Create the repository trait in `src/interfaces/repositories/`:
+    
+    ```rust src/interfaces/repositories/product_repository.rs
+    #[async_trait]
+    pub trait ProductRepository: Send + Sync {
+        async fn find_by_id(&self, id: &str) -> Result<Product, RepositoryError>;
+    }
+    ```
+  </Step>
+  
+  <Step title="Implement repository">
+    Implement the repository in `src/infrastructure/persistence/`:
+    
+    ```rust src/infrastructure/persistence/postgres/product_repository.rs
+    pub struct PostgresProductRepository {
+        pool: PgPool,
+    }
+    
+    #[async_trait]
+    impl ProductRepository for PostgresProductRepository {
+        // Implementation
+    }
+    ```
+  </Step>
+  
+  <Step title="Create DTOs">
+    Define request/response DTOs in `src/application/dtos/`:
+    
+    ```rust src/application/dtos/product_dto.rs
+    #[derive(Deserialize, Validate)]
+    pub struct CreateProductRequest {
+        #[validate(length(min = 1, max = 100))]
+        pub name: String,
+        pub price: f64,
+    }
+    ```
+  </Step>
+  
+  <Step title="Implement service">
+    Create service in `src/application/services/`:
+    
+    ```rust src/application/services/product_service.rs
+    pub struct ProductService {
+        repository: Arc<dyn ProductRepository>,
+    }
+    ```
+  </Step>
+  
+  <Step title="Create controller">
+    Add controller in `src/infrastructure/http/controllers/`:
+    
+    ```rust src/infrastructure/http/controllers/product_controller.rs
+    pub struct ProductController;
+    
+    impl ProductController {
+        pub async fn create(/* ... */) -> ApiResult<HttpResponse> {
+            // Implementation
+        }
+    }
+    ```
+  </Step>
+  
+  <Step title="Register routes">
+    Add routes in `src/routes/api.rs`:
+    
+    ```rust src/routes/api.rs
+    .service(
+        web::scope("/products")
+            .route("", web::post().to(ProductController::create))
+    )
+    ```
+  </Step>
+</Steps>
+
+## File Naming Conventions
+
+- **Modules**: `snake_case` (e.g., `user_service.rs`)
+- **Structs/Traits**: `PascalCase` (e.g., `UserService`, `UserRepository`)
+- **Functions**: `snake_case` (e.g., `get_user_by_id`)
+- **Constants**: `SCREAMING_SNAKE_CASE` (e.g., `JWT_SECRET`)
+
+## Next Steps
+
+Now that you understand the project structure:
+
+- Explore the codebase starting from `src/main.rs`
+- Read through a complete feature (e.g., user authentication)
+- Try adding your own endpoint following the layer structure
+- Study the domain entities to understand business logic

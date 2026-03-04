@@ -1,0 +1,192 @@
+---
+title: Routing
+description: Learn how to define and organize routes in the Ironclad framework
+---
+
+Ironclad uses Actix-web's powerful routing system to organize your API endpoints. Routes are centrally configured and map HTTP methods to controller actions.
+
+## Route Configuration
+
+All routes are defined in `src/routes/api.rs`. The framework uses a hierarchical scope-based approach to organize endpoints:
+
+```rust src/routes/api.rs
+use actix_web::web;
+use actix_files::Files; 
+use actix_governor::Governor;
+use crate::infrastructure::http::{
+    AuthController, 
+    UserController, 
+    TestItemController, 
+    HealthController
+};
+use crate::middleware::rate_limit::api_rate_limiter;
+
+pub fn configure(cfg: &mut web::ServiceConfig) {
+    // Static files route
+    cfg.service(Files::new("/static", "./static"));
+
+    // API routes
+    cfg.service(
+        web::scope("/api")
+            .service(
+                web::scope("/auth")
+                    .route("/register", web::post().to(AuthController::register))
+                    .route("/login", web::post().to(AuthController::login))
+                    .route("/verify-admin", web::get().to(AuthController::verify_admin))
+            )
+            .service(
+                web::scope("/user")
+                    .route("/profile", web::get().to(UserController::get_profile))
+                    .route("/all", web::get().to(UserController::get_all_users))
+                    .route("/{id}", web::get().to(UserController::get_user))
+            )
+            .service(
+                web::scope("/test-items")
+                    .route("", web::post().to(TestItemController::create))
+                    .route("", web::get().to(TestItemController::get_all))
+                    .route("/{id}", web::get().to(TestItemController::get_by_id))
+                    .route("/{id}", web::put().to(TestItemController::update))
+                    .route("/{id}", web::delete().to(TestItemController::delete))
+            )
+    );
+}
+```
+
+## Route Structure
+
+<Steps>
+
+### Create a scope
+
+Scopes group related endpoints under a common prefix:
+
+```rust
+web::scope("/api")
+```
+
+### Nest scopes for organization
+
+Create logical groups for different resources:
+
+```rust
+web::scope("/api")
+    .service(web::scope("/auth"))
+    .service(web::scope("/user"))
+    .service(web::scope("/test-items"))
+```
+
+### Map routes to controllers
+
+Connect HTTP methods and paths to controller methods:
+
+```rust
+web::scope("/auth")
+    .route("/register", web::post().to(AuthController::register))
+    .route("/login", web::post().to(AuthController::login))
+```
+
+</Steps>
+
+## HTTP Method Routing
+
+Map different HTTP methods to appropriate actions:
+
+| Method | Usage | Example |
+|--------|-------|----------|
+| `web::get()` | Retrieve resources | `web::get().to(UserController::get_profile)` |
+| `web::post()` | Create resources | `web::post().to(AuthController::register)` |
+| `web::put()` | Update resources | `web::put().to(TestItemController::update)` |
+| `web::delete()` | Delete resources | `web::delete().to(TestItemController::delete)` |
+
+## Path Parameters
+
+Capture dynamic segments in your routes using curly braces:
+
+```rust
+web::scope("/user")
+    .route("/{id}", web::get().to(UserController::get_user))
+```
+
+Access the parameter in your controller:
+
+```rust
+pub async fn get_user(
+    service: web::Data<Arc<UserService>>,
+    auth: AuthUser,
+    user_id: web::Path<String>,
+) -> ApiResult<HttpResponse> {
+    let requested_id = user_id.into_inner();
+    // Use the ID...
+}
+```
+
+## RESTful Resource Routes
+
+For standard CRUD operations, follow this pattern:
+
+```rust
+web::scope("/test-items")
+    .route("", web::post().to(TestItemController::create))       // POST /api/test-items
+    .route("", web::get().to(TestItemController::get_all))       // GET /api/test-items
+    .route("/{id}", web::get().to(TestItemController::get_by_id)) // GET /api/test-items/123
+    .route("/{id}", web::put().to(TestItemController::update))    // PUT /api/test-items/123
+    .route("/{id}", web::delete().to(TestItemController::delete)) // DELETE /api/test-items/123
+```
+
+## Middleware and Rate Limiting
+
+Apply middleware to specific routes using the `wrap` method:
+
+```rust
+web::scope("/administration")
+    .service(
+        web::resource("/system-json")
+            .wrap(Governor::new(&api_rate_limiter(1, 2)))
+            .route(web::get().to(HealthController::system_info_json))
+    )
+```
+
+<Note>
+The `api_rate_limiter(1, 2)` allows 1 request per 2 seconds for this specific endpoint.
+</Note>
+
+## Static File Serving
+
+Serve static assets like CSS, JavaScript, and images:
+
+```rust
+cfg.service(Files::new("/static", "./static"));
+```
+
+This maps the `/static` URL path to the `./static` directory on disk.
+
+## Route Registration
+
+The route configuration is registered in your main application setup:
+
+```rust src/main.rs
+HttpServer::new(move || {
+    App::new()
+        .configure(routes::api::configure)
+        // other configuration...
+})
+```
+
+## Best Practices
+
+<Tip>
+- **Group by resource**: Keep related endpoints together in scopes
+- **Use consistent naming**: Follow RESTful conventions (`/users`, `/posts`, not `/getUsers`)
+- **Version your API**: Consider using `/api/v1` for versioning
+- **Path parameters over query strings**: Use `/users/{id}` instead of `/users?id=123`
+</Tip>
+
+<Warning>
+Avoid deeply nested scopes (more than 3 levels) as they make URLs harder to understand and maintain.
+</Warning>
+
+## Next Steps
+
+- Learn how to create [Controllers](/core-concepts/controllers) to handle route requests
+- Understand [Services](/core-concepts/services) for business logic
+- Implement [authentication middleware](/security/authentication) for protected routes

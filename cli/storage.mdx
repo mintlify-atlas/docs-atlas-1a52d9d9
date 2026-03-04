@@ -1,0 +1,557 @@
+---
+title: Storage Management Commands
+description: Initialize and manage storage directories and symlinks
+---
+
+The storage commands help you set up and manage the application's storage directory structure, including creating necessary directories, symlinks, and checking permissions.
+
+## Storage Structure
+
+The framework uses the following storage structure:
+
+```
+storage/
+├── app/
+│   ├── public/              # User-uploaded files (symlinked to static/storage)
+│   └── .gitignore
+├── framework/
+│   ├── cache/               # Application cache
+│   ├── maintenance.json     # Maintenance mode state
+│   └── .gitignore
+└── logs/                    # Application logs
+    └── .gitignore
+
+static/
+└── storage/                 # Symlink → storage/app/public
+```
+
+## Available Commands
+
+### storage init
+
+Initialize the storage directory structure by creating all necessary directories and `.gitignore` files.
+
+```bash
+cargo run --bin ironclad -- storage init
+```
+
+**Output:**
+```
+🚀 Initializing storage directory structure...
+
+  ✅ Created: storage
+  ✅ Created: storage/app
+  ✅ Created: storage/app/public
+  ✅ Created: storage/framework
+  ✅ Created: storage/framework/cache
+  ✅ Created: storage/logs
+
+📊 Summary:
+  ✅ Created: 6 directories
+  ⏭️  Existed: 0 directories
+
+✅ Storage structure initialized successfully!
+
+Next steps:
+  1. Run: cargo run --bin ironclad -- storage link
+  2. Run: cargo run --bin ironclad -- storage check
+```
+
+**What it does:**
+- Creates all storage directories
+- Generates `.gitignore` files to keep directories in git but ignore contents
+- Shows summary of created vs. existing directories
+
+### storage link
+
+Create a symbolic link from `static/storage` to `storage/app/public` to make user uploads accessible via web server.
+
+```bash
+cargo run --bin ironclad -- storage link
+```
+
+**Output (Linux/macOS):**
+```
+🔗 Creating static/storage symlink...
+
+✅ Symlink created successfully!
+
+   From: static/storage
+   To:   /home/user/project/storage/app/public
+```
+
+**Output (Windows):**
+```
+🔗 Creating static/storage symlink...
+
+✅ Symlink created successfully!
+
+   From: static\storage
+   To:   C:\Users\user\project\storage\app\public
+
+ℹ️  Note: On Windows, you may need Administrator privileges
+```
+
+#### Force Recreate
+
+If the symlink already exists, use `--force` to recreate it:
+
+```bash
+cargo run --bin ironclad -- storage link --force
+```
+
+**Output:**
+```
+🔗 Creating static/storage symlink...
+
+⚠️  Removing existing symlink...
+✅ Symlink created successfully!
+```
+
+### storage check
+
+Verify that all storage directories exist and have correct permissions.
+
+```bash
+cargo run --bin ironclad -- storage check
+```
+
+**Output (All Checks Passed):**
+```
+🔍 Checking storage directories and permissions...
+
+  📁 storage ... ✅ OK (R/W)
+  📁 storage/app ... ✅ OK (R/W)
+  📁 storage/app/public ... ✅ OK (R/W)
+  📁 storage/framework ... ✅ OK (R/W)
+  📁 storage/framework/cache ... ✅ OK (R/W)
+  📁 storage/logs ... ✅ OK (R/W)
+
+  🔗 static/storage symlink ... ✅ EXISTS
+
+╔═══════════════════════════════════╗
+║  ✅ All storage checks passed!   ║
+╚═══════════════════════════════════╝
+```
+
+**Output (Issues Found):**
+```
+🔍 Checking storage directories and permissions...
+
+  📁 storage ... ✅ OK (R/W)
+  📁 storage/app ... ✅ OK (R/W)
+  📁 storage/app/public ... ❌ NOT FOUND
+  📁 storage/framework ... ⚠️  READ ONLY
+  📁 storage/framework/cache ... ✅ OK (R/W)
+  📁 storage/logs ... ❌ NO ACCESS
+
+  🔗 static/storage symlink ... ❌ NOT FOUND
+     Run: cargo run --bin ironclad -- storage link
+
+╔═══════════════════════════════════════════════╗
+║  ⚠️  Some storage checks failed              ║
+║     Run: cargo run --bin ironclad -- storage init  ║
+╚═══════════════════════════════════════════════╝
+```
+
+**Permission Status:**
+- ✅ **OK (R/W)**: Directory is readable and writable
+- ⚠️ **READ ONLY**: Directory exists but is not writable
+- ❌ **NO ACCESS**: Directory is not readable
+- ❌ **NOT FOUND**: Directory does not exist
+
+### storage info
+
+Display detailed information about storage directories.
+
+```bash
+cargo run --bin ironclad -- storage info
+```
+
+**Output:**
+```
+📊 Storage Directory Information
+
+📍 Base directory: /home/user/my-project
+
+📁 Storage structure:
+
+  ✅ storage
+     Path: /home/user/my-project/storage
+     Items: 3
+     Size: 4096 bytes
+
+  ✅ storage/app
+     Path: /home/user/my-project/storage/app
+     Items: 2
+     Size: 4096 bytes
+
+  ✅ storage/app/public
+     Path: /home/user/my-project/storage/app/public
+     Items: 5
+     Size: 2048000 bytes
+
+  ✅ storage/framework
+     Path: /home/user/my-project/storage/framework
+     Items: 2
+     Size: 4096 bytes
+
+  ✅ storage/framework/cache
+     Path: /home/user/my-project/storage/framework/cache
+     Items: 0
+     Size: 0 bytes
+
+  ✅ storage/logs
+     Path: /home/user/my-project/storage/logs
+     Items: 3
+     Size: 10240 bytes
+
+  🔗 static/storage
+     Target: /home/user/my-project/storage/app/public
+
+💾 Storage base: storage/
+🌐 User uploads: static/storage → storage/app/public
+🔧 Framework files: storage/framework/
+📝 Logs: storage/logs/
+🎨 Static assets: static/framework/
+```
+
+## Initial Setup Workflow
+
+When setting up a new project or deployment:
+
+```bash
+# Step 1: Initialize storage directories
+cargo run --bin ironclad -- storage init
+
+# Step 2: Create symlink
+cargo run --bin ironclad -- storage link
+
+# Step 3: Verify setup
+cargo run --bin ironclad -- storage check
+
+# Step 4 (Optional): View detailed info
+cargo run --bin ironclad -- storage info
+```
+
+## Storage Directories Explained
+
+### storage/app/public
+
+**Purpose:** User-uploaded files accessible via web server
+
+**Examples:**
+- Profile pictures
+- Document uploads
+- Media files
+- User-generated content
+
+**Access:** Via symlink at `static/storage`
+
+```rust
+// Save file
+let file_path = "storage/app/public/avatars/user123.jpg";
+
+// Access via URL
+// http://localhost:8080/static/storage/avatars/user123.jpg
+```
+
+### storage/framework
+
+**Purpose:** Framework-generated files and cache
+
+**Contents:**
+- `cache/` - Application cache files
+- `maintenance.json` - Maintenance mode state
+
+**Note:** Not web-accessible (internal only)
+
+### storage/logs
+
+**Purpose:** Application log files
+
+**Examples:**
+- `app.log` - Application logs
+- `error.log` - Error logs
+- `access.log` - Access logs
+
+**Note:** Not web-accessible (internal only)
+
+## Symlink Creation
+
+### Why Symlinks?
+
+Symlinks allow user uploads in `storage/app/public` to be accessible via the web server at `static/storage`:
+
+```
+User uploads to:     storage/app/public/photos/pic.jpg
+Accessible via web:  static/storage/photos/pic.jpg
+URL:                 http://localhost:8080/static/storage/photos/pic.jpg
+```
+
+### Platform Differences
+
+**Linux/macOS:**
+- Uses `std::os::unix::fs::symlink`
+- No special permissions required
+- Symlinks work out of the box
+
+**Windows:**
+- Uses `std::os::windows::fs::symlink_dir`
+- Requires **Administrator privileges** OR **Developer Mode**
+- If permission denied, enable Developer Mode in Windows Settings
+
+### Troubleshooting Symlinks
+
+**Error: Symlink already exists**
+```bash
+# Use --force to recreate
+cargo run --bin ironclad -- storage link --force
+```
+
+**Error: Failed to create symlink (Windows)**
+```
+❌ Failed to create symlink: Access is denied. (os error 5)
+
+💡 On Windows, you may need to:
+   1. Run as Administrator
+   2. Enable Developer Mode in Windows Settings
+```
+
+**Solution 1:** Run as Administrator
+```powershell
+# Right-click PowerShell/Terminal → Run as Administrator
+cargo run --bin ironclad -- storage link
+```
+
+**Solution 2:** Enable Developer Mode
+1. Open Windows Settings
+2. Go to "Update & Security" → "For developers"
+3. Enable "Developer Mode"
+4. Run command again
+
+**Error: Target directory not found**
+```
+❌ Target directory not found: storage/app/public
+   Run: cargo run --bin ironclad -- storage init
+```
+
+**Solution:**
+```bash
+# Initialize storage first
+cargo run --bin ironclad -- storage init
+
+# Then create symlink
+cargo run --bin ironclad -- storage link
+```
+
+## .gitignore Files
+
+The `storage init` command creates `.gitignore` files to keep directory structure in git while ignoring contents:
+
+**storage/app/.gitignore:**
+```gitignore
+*
+!public/
+!.gitignore
+```
+
+**storage/app/public/.gitignore:**
+```gitignore
+*
+!.gitignore
+```
+
+**storage/framework/.gitignore:**
+```gitignore
+*
+!cache/
+!.gitignore
+```
+
+**storage/framework/cache/.gitignore:**
+```gitignore
+*
+!.gitignore
+```
+
+**storage/logs/.gitignore:**
+```gitignore
+*
+!.gitignore
+```
+
+This ensures:
+- ✅ Directory structure is tracked in git
+- ❌ File contents are NOT tracked (user uploads, logs, cache)
+
+## Permission Issues
+
+### Read-Only Directories
+
+**Problem:**
+```
+📁 storage/logs ... ⚠️  READ ONLY
+```
+
+**Solution (Linux/macOS):**
+```bash
+chmod -R 755 storage/logs
+```
+
+**Solution (Windows):**
+```powershell
+# Right-click folder → Properties → Security → Edit
+# Grant "Full Control" to your user
+```
+
+### No Access
+
+**Problem:**
+```
+📁 storage/framework ... ❌ NO ACCESS
+```
+
+**Solution (Linux/macOS):**
+```bash
+# Change ownership
+sudo chown -R $USER:$USER storage/
+
+# Fix permissions
+chmod -R 755 storage/
+```
+
+**Solution (Windows):**
+```powershell
+# Run as Administrator
+icacls storage /grant:r "$env:USERNAME:(OI)(CI)F" /T
+```
+
+## Production Deployment
+
+### Docker Deployment
+
+When deploying with Docker, ensure storage is properly set up:
+
+```dockerfile
+# Dockerfile
+FROM rust:1.70 as builder
+WORKDIR /app
+COPY . .
+RUN cargo build --release
+
+FROM debian:bookworm-slim
+WORKDIR /app
+
+# Copy binary
+COPY --from=builder /app/target/release/ironclad /app/
+COPY --from=builder /app/target/release/main /app/
+
+# Initialize storage
+RUN /app/ironclad storage init
+RUN /app/ironclad storage link
+
+# Verify setup
+RUN /app/ironclad storage check
+
+CMD ["/app/main"]
+```
+
+### Server Deployment
+
+On production servers:
+
+```bash
+# 1. Deploy application
+git pull origin main
+cargo build --release
+
+# 2. Initialize storage
+./target/release/ironclad storage init
+
+# 3. Create symlink
+./target/release/ironclad storage link
+
+# 4. Set permissions
+chmod -R 755 storage/
+chown -R www-data:www-data storage/
+
+# 5. Verify
+./target/release/ironclad storage check
+
+# 6. Restart server
+systemctl restart ironclad
+```
+
+## Best Practices
+
+### 1. Always Initialize Storage First
+
+```bash
+# ✅ Correct order
+cargo run --bin ironclad -- storage init   # Create directories
+cargo run --bin ironclad -- storage link   # Create symlink
+cargo run --bin ironclad -- storage check  # Verify
+
+# ❌ Wrong order
+cargo run --bin ironclad -- storage link   # Fails: target not found
+```
+
+### 2. Regular Permission Checks
+
+Run `storage check` regularly:
+- After deployments
+- After system updates
+- When debugging file upload issues
+- In CI/CD pipelines
+
+### 3. Backup User Uploads
+
+Backup `storage/app/public` regularly:
+
+```bash
+# Create backup
+tar -czf storage-backup-$(date +%Y%m%d).tar.gz storage/app/public/
+
+# Restore backup
+tar -xzf storage-backup-20260304.tar.gz
+```
+
+### 4. Monitor Disk Usage
+
+Check storage size with `storage info`:
+
+```bash
+# Check storage usage
+cargo run --bin ironclad -- storage info
+
+# Or use system commands
+du -sh storage/
+```
+
+### 5. Clean Cache Periodically
+
+```bash
+# Clear cache directory
+rm -rf storage/framework/cache/*
+
+# Or create a CLI command
+cargo run --bin ironclad -- cache:clear  # (if implemented)
+```
+
+## Related Commands
+
+<CardGroup cols={2}>
+  <Card title="CLI Overview" icon="terminal" href="/cli/overview">
+    View all available CLI commands
+  </Card>
+  <Card title="File Upload Guide" icon="cloud-arrow-up" href="/guides/file-upload">
+    Learn how to handle file uploads
+  </Card>
+  <Card title="Deployment Guide" icon="rocket" href="/deployment/overview">
+    Deploy your application
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/troubleshooting">
+    Common issues and solutions
+  </Card>
+</CardGroup>

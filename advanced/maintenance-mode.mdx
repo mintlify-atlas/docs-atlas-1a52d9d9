@@ -1,0 +1,511 @@
+---
+title: Maintenance Mode
+description: Laravel-style maintenance mode with secret bypass and custom templates
+---
+
+Maintenance mode allows you to temporarily disable your application for updates, migrations, or deployments while keeping the server running.
+
+## What is Maintenance Mode?
+
+When you activate maintenance mode:
+- ✅ Your server keeps running
+- ⛔ All requests receive a **503 Service Unavailable** response
+- 🎨 Users see a custom page (HTML) or JSON message
+- 🔑 You can create a secret bypass for team access
+
+## CLI Commands
+
+### Activate Maintenance Mode
+
+```bash
+# Basic activation (default message)
+cargo run --bin ironclad -- down
+
+# With custom message
+cargo run --bin ironclad -- down --message "Database migration in progress"
+
+# With custom retry time (in seconds)
+cargo run --bin ironclad -- down --retry 300
+
+# With secret bypass
+cargo run --bin ironclad -- down --secret "myteam2024"
+
+# Full configuration
+cargo run --bin ironclad -- down \
+  --message "Scheduled maintenance" \
+  --retry 1800 \
+  --secret "admin2024"
+```
+
+### Deactivate Maintenance Mode
+
+```bash
+cargo run --bin ironclad -- up
+```
+
+## CLI Options
+
+<ParamField path="--message" type="string" default="Application is down for maintenance">
+  Custom message displayed to users
+</ParamField>
+
+<ParamField path="--retry" type="u32" default="60">
+  Retry-After header value in seconds (how long to wait before retrying)
+</ParamField>
+
+<ParamField path="--secret" type="string" optional>
+  Secret token to bypass maintenance mode
+</ParamField>
+
+<ParamField path="--render" type="string" optional>
+  Template to render (e.g., "emergency" or "emergency::low")
+</ParamField>
+
+<ParamField path="--norender" type="boolean" default="false">
+  Force JSON response (no HTML rendering)
+</ParamField>
+
+<ParamField path="--redirect" type="string" optional>
+  Redirect all requests to this path
+</ParamField>
+
+## Implementation Details
+
+### CLI Implementation
+
+The CLI creates a maintenance file with configuration:
+
+```rust src/cli/main.rs
+fn maintenance_down(
+    message: Option<String>, 
+    retry: u32,
+    secret: Option<String>,
+    render: Option<String>,
+    norender: bool,
+    redirect: Option<String>,
+) {
+    println!("🔧 Putting application into maintenance mode...");
+
+    // Create storage directory if it doesn't exist
+    if let Err(e) = fs::create_dir_all("storage/framework") {
+        eprintln!("❌ Failed to create storage directory: {}", e);
+        process::exit(1);
+    }
+
+    // Create maintenance payload
+    let mut maintenance_data = serde_json::json!({
+        "time": chrono::Utc::now().timestamp(),
+        "message": message.unwrap_or_else(|| "Application is down for maintenance".to_string()),
+        "retry": retry,
+        "created_at": chrono::Utc::now().to_rfc3339(),
+    });
+
+    // Add optional fields
+    if let Some(secret_value) = secret {
+        maintenance_data["secret"] = serde_json::json!(secret_value);
+    }
+
+    if norender {
+        maintenance_data["norender"] = serde_json::json!(true);
+    }
+
+    if let Some(render_template) = render {
+        maintenance_data["render"] = serde_json::json!(render_template);
+    }
+
+    if let Some(redirect_path) = redirect {
+        maintenance_data["redirect"] = serde_json::json!(redirect_path);
+    }
+
+    // Write maintenance file
+    fs::write(MAINTENANCE_FILE, maintenance_data.to_string())
+        .expect("Failed to create maintenance file");
+}
+```
+
+### Maintenance File Structure
+
+```json storage/framework/maintenance.json
+{
+  "time": 1708550400,
+  "message": "Database migration in progress",
+  "retry": 300,
+  "created_at": "2026-02-21T20:00:00Z",
+  "secret": "myteam2024",
+  "render": "emergency::low"
+}
+```
+
+## Secret Bypass
+
+The secret bypass feature allows your team to access the application during maintenance.
+
+### How It Works
+
+1. **Activate with secret:**
+```bash
+cargo run --bin ironclad -- down --secret "myteam2024"
+```
+
+2. **First access - authenticate:**
+```
+http://localhost:8080/api/users/myteam2024
+```
+This redirects to `/api/users` and sets a cookie.
+
+3. **Subsequent accesses - automatic:**
+```
+http://localhost:8080/api/users
+```
+The cookie is checked automatically, no secret needed.
+
+### Cookie Implementation
+
+```rust src/middleware/maintenance.rs
+if let Some(secret) = secret_opt {
+    // Check if the user already has a valid bypass cookie
+    if let Some(cookie) = req.cookie("maintenance_bypass") {
+        if cookie.value() == secret {
+            // Valid cookie, bypass maintenance mode completely
+            let fut = self.service.call(req);
+            return Box::pin(async move {
+                let res = fut.await?;
+                Ok(res.map_into_left_body())
+            });
+        }
+    }
+
+    // Check if the user is trying to authenticate via URL suffix
+    let path = req.path().to_string();
+    let secret_suffix = format!("/{}", secret);
+    
+    if path.ends_with(&secret_suffix) {
+        let new_path = path.trim_end_matches(&secret_suffix);
+        let redirect_to = if new_path.is_empty() { "/" } else { new_path }.to_string();
+        
+        // Create a session cookie for the bypass
+        let mut cookie = Cookie::new("maintenance_bypass", secret);
+        cookie.set_path("/");
+        cookie.set_http_only(true);
+
+        let response = HttpResponse::TemporaryRedirect()
+            .insert_header((header::LOCATION, redirect_to.as_str()))
+            .cookie(cookie)
+            .finish();
+    }
+}
+```
+
+## Custom HTML Templates
+
+### Template Structure
+
+```
+templates/render/down/
+├── default.html              # Default template
+├── emergency/
+│   ├── default.html          # --render "emergency"
+│   └── low.html              # --render "emergency::low"
+└── maintenance/
+    └── database.html         # --render "maintenance::database"
+```
+
+### Using Templates
+
+```bash
+# Use default template
+cargo run --bin ironclad -- down
+
+# Use specific folder (loads its default.html)
+cargo run --bin ironclad -- down --render "emergency"
+# → Loads: templates/render/down/emergency/default.html
+
+# Use specific file
+cargo run --bin ironclad -- down --render "emergency::low"
+# → Loads: templates/render/down/emergency/low.html
+```
+
+### Creating Custom Templates
+
+```html templates/render/down/myfolder/default.html
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Maintenance</title>
+    <style>
+        body { 
+            background: #2c3e50; 
+            color: white; 
+            text-align: center; 
+            padding-top: 100px;
+            font-family: Arial, sans-serif;
+        }
+        h1 { font-size: 3em; }
+        p { font-size: 1.5em; }
+    </style>
+</head>
+<body>
+    <h1>🚧 Under Maintenance</h1>
+    <p>{{MESSAGE}}</p>
+    <p>Please check back in {{RETRY}} seconds</p>
+    <small>Started: {{TIMESTAMP}}</small>
+</body>
+</html>
+```
+
+**Available variables:**
+- `{{MESSAGE}}` - Your custom message
+- `{{RETRY}}` - Retry time in seconds
+- `{{TIMESTAMP}}` - Activation date/time
+
+**Use your template:**
+```bash
+cargo run --bin ironclad -- down --render "myfolder" --message "Deploying v2.0"
+```
+
+## JSON-Only Mode
+
+Force JSON responses even for browsers (useful for pure APIs):
+
+```bash
+cargo run --bin ironclad -- down --norender
+```
+
+**Response:**
+```json
+{
+  "error": "Service Unavailable",
+  "message": "Application is down for maintenance",
+  "status": 503,
+  "retry_after": 60
+}
+```
+
+## Redirect Mode
+
+Redirect all requests to a specific URL:
+
+```bash
+# Redirect to internal route
+cargo run --bin ironclad -- down --redirect "/status"
+
+# Redirect to external site
+cargo run --bin ironclad -- down --redirect "https://status.myapp.com"
+```
+
+### Redirect Implementation
+
+```rust src/middleware/maintenance.rs
+if let Some(redirect) = data.get("redirect").and_then(|r| r.as_str()) {
+    let current_path = req.path();
+    
+    // Avoid redirect loop - don't redirect if already on target path
+    if current_path != redirect {
+        let response = HttpResponse::TemporaryRedirect()
+            .insert_header(("Location", redirect))
+            .finish();
+        return response;
+    }
+}
+```
+
+## Complete Examples
+
+### Example 1: Scheduled Maintenance
+
+```bash
+# Activate
+cargo run --bin ironclad -- down \
+  --message "Scheduled maintenance: security update" \
+  --retry 1800 \
+  --secret "admin2024"
+
+# Team accesses with:
+# http://localhost:8080/api/any-route/admin2024
+
+# When done
+cargo run --bin ironclad -- up
+```
+
+### Example 2: Database Migration
+
+```bash
+# Step 1: Activate maintenance
+cargo run --bin ironclad -- down \
+  --render "maintenance::database" \
+  --message "Migrating database from MySQL to PostgreSQL" \
+  --retry 600 \
+  --secret "dbteam"
+
+# Step 2: Team accesses with /dbteam at the end of any URL
+# http://localhost:8080/api/users/dbteam
+
+# Step 3: Run migration
+sqlx migrate run
+
+# Step 4: Deactivate
+cargo run --bin ironclad -- up
+```
+
+### Example 3: Emergency with External Status Page
+
+```bash
+cargo run --bin ironclad -- down \
+  --redirect "https://status.myapp.com/incident" \
+  --secret "emergency-2024"
+```
+
+## Response Types
+
+### Automatic Detection
+
+The middleware automatically detects whether to return HTML or JSON:
+
+```rust src/middleware/maintenance.rs
+fn is_browser(req: &ServiceRequest) -> bool {
+    if let Some(accept) = req.headers().get("Accept") {
+        if let Ok(accept_str) = accept.to_str() {
+            return accept_str.contains("text/html");
+        }
+    }
+    false
+}
+```
+
+### Response Priority
+
+1. **Redirect** (if configured) → 307 Temporary Redirect
+2. **norender** flag → JSON response
+3. **Browser + render template** → Custom HTML
+4. **Browser** → Default HTML
+5. **API request** → JSON response
+
+## Checking Status
+
+```bash
+# Check if maintenance file exists
+ls storage/framework/maintenance.json
+
+# View contents (Linux/Mac)
+cat storage/framework/maintenance.json | jq
+
+# View contents (Windows PowerShell)
+Get-Content storage\framework\maintenance.json | ConvertFrom-Json
+```
+
+## Comparison with Laravel
+
+| Laravel | Rust Ironclad | Description |
+|---------|---------------|-------------|
+| `php artisan down` | `cargo run --bin ironclad -- down` | Activate maintenance |
+| `php artisan up` | `cargo run --bin ironclad -- up` | Deactivate maintenance |
+| `--secret="token"` | `--secret "token"` | Bypass access |
+| `--render="view"` | `--render "template"` | Custom view |
+| `--redirect="/url"` | `--redirect "/url"` | Redirect |
+| `--retry=600` | `--retry 600` | Retry time |
+
+## Best Practices
+
+<Tip>
+**Development Workflow**
+
+1. Announce maintenance window to users
+2. Activate maintenance mode with appropriate retry time
+3. Share secret with team members securely
+4. Perform updates/migrations
+5. Test thoroughly with bypass access
+6. Deactivate maintenance mode
+</Tip>
+
+<Warning>
+**Security Considerations**
+
+- Store secrets in environment variables, not in version control
+- Use HTTPS in production to protect bypass cookies
+- Generate strong, unique secrets for each maintenance window
+- Clear team bypass cookies after maintenance
+- Don't share secrets in public channels
+</Warning>
+
+### Automated Deployment Script
+
+```bash deploy.sh
+#!/bin/bash
+
+# Generate unique secret
+SECRET="deploy-$(date +%s)"
+
+# Activate maintenance
+cargo run --bin ironclad -- down \
+  --message "Deploying new version" \
+  --secret "$SECRET" \
+  --retry 300
+
+echo "Maintenance mode active. Bypass: /$SECRET"
+
+# Run deployment commands
+git pull
+cargo build --release
+sqlx migrate run
+
+# Deactivate maintenance
+cargo run --bin ironclad -- up
+
+echo "Deployment complete. Application is live."
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Template not found">
+    **Problem:** "Template not found" error
+    
+    **Solution:** Verify template location
+    ```bash
+    tree templates/render/down
+    ```
+    Templates must be in `templates/`, not `src/templates/`
+  </Accordion>
+
+  <Accordion title="Application not in maintenance mode">
+    **Problem:** "Application is not in maintenance mode" when running `up`
+    
+    **Solution:** Check if maintenance file exists
+    ```bash
+    ls storage/framework/maintenance.json
+    ```
+    If it doesn't exist, the app is not in maintenance mode
+  </Accordion>
+
+  <Accordion title="Server keeps responding normally">
+    **Problem:** Server keeps responding normally after running `down`
+    
+    **Solution 1:** Restart the server
+    ```bash
+    # Ctrl+C then
+    cargo run
+    ```
+    
+    **Solution 2:** Verify maintenance file was created
+    ```bash
+    cat storage/framework/maintenance.json
+    ```
+  </Accordion>
+
+  <Accordion title="Secret bypass not working">
+    **Problem:** Secret bypass is not working
+    
+    **Solution:** Clear browser cookies or use incognito mode to test
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Middleware" icon="layer-group" href="/advanced/middleware">
+    Learn about the maintenance mode middleware implementation
+  </Card>
+  <Card title="Configuration" icon="gear" href="/advanced/configuration">
+    Configure your application settings
+  </Card>
+</CardGroup>

@@ -1,0 +1,239 @@
+---
+title: Database Check Command
+description: Verify database connection and health
+---
+
+The `db-check` command tests your PostgreSQL database connection and verifies that the database is accessible and responding to queries.
+
+## Usage
+
+```bash
+cargo run --bin ironclad -- db-check
+```
+
+### With Alias
+
+```bash
+ironclad db-check
+```
+
+## Output Example
+
+### Successful Connection
+
+```
+🔍 Checking database connection...
+
+📍 Database: postgresql://postgres:****@localhost:5432/rust
+
+🔌 Connecting... ✅
+📡 Sending ping... ✅
+
+╔═══════════════════════════════╗
+║  ✅ Database is UP and ready  ║
+╚═══════════════════════════════╝
+```
+
+### Connection Failed
+
+```
+🔍 Checking database connection...
+
+📍 Database: postgresql://postgres:****@localhost:5432/rust
+
+🔌 Connecting... ❌
+
+Error: error connecting to server: Connection refused (os error 111)
+
+Possible causes:
+  • PostgreSQL is not running
+  • Wrong credentials in DATABASE_URL
+  • Database does not exist
+  • Network/firewall issues
+```
+
+## How It Works
+
+The command performs the following steps:
+
+1. **Load environment variables** from `.env` file
+2. **Read `DATABASE_URL`** environment variable
+3. **Mask password** in connection string for security
+4. **Connect to database** using SQLx connection pool
+5. **Execute test query** (`SELECT 1`) to verify database responds
+6. **Close connection** cleanly
+
+## Configuration
+
+The command reads the database connection from the `DATABASE_URL` environment variable in your `.env` file:
+
+```env
+DATABASE_URL=postgresql://user:password@localhost:5432/database_name
+```
+
+### Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DATABASE_URL` | Yes | PostgreSQL connection string |
+| `DB_MAX_CONNECTIONS` | No | Maximum number of connections in pool (default: 5) |
+
+## Security Features
+
+### Password Masking
+
+The command automatically masks the password in the connection string when displaying output:
+
+**Before:** `postgresql://postgres:mypassword@localhost:5432/rust`  
+**After:** `postgresql://postgres:****@localhost:5432/rust`
+
+This prevents sensitive credentials from being exposed in logs or screenshots.
+
+## Troubleshooting
+
+### Error: DATABASE_URL not found
+
+```
+❌ DATABASE_URL not found in environment
+   Make sure .env file exists with DATABASE_URL
+```
+
+**Solution:**
+1. Create a `.env` file in your project root
+2. Add `DATABASE_URL=postgresql://user:password@host:port/database`
+3. Run the command again
+
+### Error: Connection refused
+
+**Possible causes:**
+- PostgreSQL server is not running
+- Wrong host or port in `DATABASE_URL`
+- Firewall blocking the connection
+
+**Solutions:**
+1. Start PostgreSQL:
+   ```bash
+   # Linux
+   sudo systemctl start postgresql
+   
+   # macOS
+   brew services start postgresql
+   
+   # Windows
+   net start postgresql
+   ```
+
+2. Verify PostgreSQL is listening:
+   ```bash
+   psql -h localhost -U postgres -l
+   ```
+
+### Error: Authentication failed
+
+**Solution:**
+Verify your username and password in `DATABASE_URL`:
+```env
+DATABASE_URL=postgresql://correct_user:correct_password@localhost:5432/database
+```
+
+### Error: Database does not exist
+
+**Solution:**
+Create the database:
+```bash
+# Using createdb command
+createb my_database
+
+# Or using psql
+psql -U postgres -c "CREATE DATABASE my_database;"
+```
+
+## When to Use
+
+Use this command to:
+
+- **Before starting the server**: Verify database is ready
+- **After configuration changes**: Test new database settings
+- **In CI/CD pipelines**: Verify database connectivity before deployment
+- **During debugging**: Isolate database connection issues
+- **After database updates**: Verify database is still accessible
+
+## Example Workflows
+
+### Pre-deployment Check
+
+```bash
+# 1. Check database
+cargo run --bin ironclad -- db-check
+
+# 2. Run migrations
+sqlx migrate run
+
+# 3. Start server
+cargo run --bin main
+```
+
+### Debugging Connection Issues
+
+```bash
+# 1. Test database
+cargo run --bin ironclad -- db-check
+
+# 2. If failed, check PostgreSQL status
+sudo systemctl status postgresql
+
+# 3. Test connection manually
+psql -h localhost -U postgres -d my_database
+
+# 4. Fix issues and test again
+cargo run --bin ironclad -- db-check
+```
+
+### CI/CD Pipeline
+
+```yaml
+# .github/workflows/deploy.yml
+steps:
+  - name: Check database
+    run: cargo run --bin ironclad -- db-check
+  
+  - name: Run migrations
+    run: sqlx migrate run
+  
+  - name: Deploy application
+    run: ./deploy.sh
+```
+
+## Technical Details
+
+### Connection Pool
+
+The command uses SQLx's `PgPool` for connection pooling. The pool is created, tested, and then properly closed:
+
+```rust
+let pool = PgPool::connect(&database_url).await?;
+sqlx::query("SELECT 1").execute(&pool).await?;
+pool.close().await;
+```
+
+### Async Runtime
+
+The command runs in an async context using Tokio:
+
+```rust
+#[tokio::main]
+async fn main() {
+    check_database().await;
+}
+```
+
+## Related Commands
+
+<CardGroup cols={2}>
+  <Card title="Maintenance Mode" icon="screwdriver-wrench" href="/cli/maintenance">
+    Put application in maintenance before database migrations
+  </Card>
+  <Card title="CLI Overview" icon="terminal" href="/cli/overview">
+    View all available CLI commands
+  </Card>
+</CardGroup>

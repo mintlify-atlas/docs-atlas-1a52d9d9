@@ -1,0 +1,554 @@
+---
+title: 'Infrastructure Layer'
+description: 'HTTP controllers, authentication, and persistence implementations'
+icon: 'server'
+---
+
+The infrastructure layer handles external concerns like HTTP requests, database access, and authentication. It depends on both domain and application layers but not vice versa.
+
+## HTTP Controllers
+
+Controllers handle HTTP requests using Actix-web framework and delegate business logic to application services.
+
+### AuthController
+
+Handles authentication endpoints with automatic validation.
+
+<ParamField path="AuthController" type="struct">
+  Zero-sized type providing authentication endpoint handlers.
+</ParamField>
+
+#### Endpoints
+
+**register**
+
+```rust
+pub async fn register(
+    service: web::Data<Arc<AuthService>>,
+    req: ValidatedJson<RegisterUserRequest>,
+) -> ApiResult<HttpResponse>
+```
+
+Registers new user account with automatic validation via ValidatedJson extractor.
+
+<ParamField path="service" type="web::Data<Arc<AuthService>>">
+  Injected authentication service from AppState
+</ParamField>
+
+<ParamField path="req" type="ValidatedJson<RegisterUserRequest>">
+  Request body with automatic validator validation
+</ParamField>
+
+<ResponseField name="response" type="ApiResult<HttpResponse>">
+  Returns 201 Created with AuthResponse (user + token) on success
+</ResponseField>
+
+**Example from source** (auth_controller.rs:14-20):
+
+```rust
+pub async fn register(
+    service: web::Data<Arc<AuthService>>,
+    req: ValidatedJson<RegisterUserRequest>,
+) -> ApiResult<HttpResponse> {
+    let response = service.register(req.0).await?;
+    Ok(HttpResponse::Created().json(response))
+}
+```
+
+**login**
+
+```rust
+pub async fn login(
+    service: web::Data<Arc<AuthService>>,
+    req: ValidatedJson<LoginRequest>,
+) -> ApiResult<HttpResponse>
+```
+
+Authenticates user and returns JWT token.
+
+<ResponseField name="response" type="ApiResult<HttpResponse>">
+  Returns 200 OK with AuthResponse on success
+</ResponseField>
+
+**verify_admin**
+
+```rust
+pub async fn verify_admin(
+    _service: web::Data<Arc<AuthService>>,
+    _admin: AdminUser,
+) -> ApiResult<HttpResponse>
+```
+
+Verifies admin authentication using AdminUser extractor. Returns success if user has admin role.
+
+---
+
+### UserController
+
+Manages user profile and administration endpoints.
+
+<ParamField path="UserController" type="struct">
+  Zero-sized type providing user management endpoint handlers.
+</ParamField>
+
+#### Endpoints
+
+**get_profile**
+
+```rust
+pub async fn get_profile(
+    service: web::Data<Arc<UserService>>,
+    auth: AuthUser,
+) -> ApiResult<HttpResponse>
+```
+
+Retrieves authenticated user's own profile.
+
+<ParamField path="auth" type="AuthUser">
+  Authenticated user extracted from JWT token
+</ParamField>
+
+**get_all_users**
+
+```rust
+pub async fn get_all_users(
+    service: web::Data<Arc<UserService>>,
+    _admin: AdminUser,
+    query: web::Query<PaginationQuery>,
+) -> ApiResult<HttpResponse>
+```
+
+Returns paginated user list (admin only).
+
+<ParamField path="_admin" type="AdminUser">
+  Ensures only admins can access this endpoint
+</ParamField>
+
+<ParamField path="query" type="web::Query<PaginationQuery>">
+  Query parameters: page (default 1), per_page (default 20, max 100)
+</ParamField>
+
+**get_user**
+
+```rust
+pub async fn get_user(
+    service: web::Data<Arc<UserService>>,
+    auth: AuthUser,
+    user_id: web::Path<String>,
+) -> ApiResult<HttpResponse>
+```
+
+Retrieves specific user profile. Users can only view their own profile unless they're admin.
+
+**Example from source** (user_controller.rs:44-52):
+
+```rust
+let requested_id = user_id.into_inner();
+
+if auth.0.sub != requested_id && !auth.0.is_admin() {
+    return Err(ApiError::Forbidden(
+        "You don't have permission to view this user".to_string(),
+    ));
+}
+```
+
+**update_profile**
+
+```rust
+pub async fn update_profile(
+    service: web::Data<Arc<UserService>>,
+    auth: AuthUser,
+    user_id: web::Path<String>,
+    req: ValidatedJson<UpdateProfileRequest>,
+) -> ApiResult<HttpResponse>
+```
+
+Updates user profile (self only). Validates that authenticated user matches target user ID.
+
+**delete_user**
+
+```rust
+pub async fn delete_user(
+    service: web::Data<Arc<UserService>>,
+    auth: AuthUser,
+    user_id: web::Path<String>,
+) -> ApiResult<HttpResponse>
+```
+
+Deletes user account (self or admin).
+
+<ResponseField name="response" type="ApiResult<HttpResponse>">
+  Returns 204 No Content on success
+</ResponseField>
+
+---
+
+### TestItemController
+
+Manages CRUD operations for test items.
+
+<ParamField path="TestItemController" type="struct">
+  Zero-sized type providing test item endpoint handlers.
+</ParamField>
+
+#### Endpoints
+
+**create**
+
+```rust
+pub async fn create(
+    service: web::Data<Arc<TestItemService>>,
+    req: ValidatedJson<CreateTestItemRequest>,
+) -> ApiResult<HttpResponse>
+```
+
+Creates new test item.
+
+<ResponseField name="response" type="ApiResult<HttpResponse>">
+  Returns 201 Created with TestItemResponse
+</ResponseField>
+
+**get_all**
+
+```rust
+pub async fn get_all(
+    service: web::Data<Arc<TestItemService>>,
+    query: web::Query<PaginationQuery>,
+) -> ApiResult<HttpResponse>
+```
+
+Retrieves paginated test items.
+
+**get_by_id**
+
+```rust
+pub async fn get_by_id(
+    service: web::Data<Arc<TestItemService>>,
+    id: web::Path<String>,
+) -> ApiResult<HttpResponse>
+```
+
+Retrieves specific test item by ID.
+
+**update**
+
+```rust
+pub async fn update(
+    service: web::Data<Arc<TestItemService>>,
+    id: web::Path<String>,
+    req: ValidatedJson<UpdateTestItemRequest>,
+) -> ApiResult<HttpResponse>
+```
+
+Updates test item fields.
+
+**delete**
+
+```rust
+pub async fn delete(
+    service: web::Data<Arc<TestItemService>>,
+    id: web::Path<String>,
+) -> ApiResult<HttpResponse>
+```
+
+Deletes test item.
+
+<ResponseField name="response" type="ApiResult<HttpResponse>">
+  Returns 204 No Content on success
+</ResponseField>
+
+---
+
+## Authentication Extractors
+
+Actix-web request extractors that validate JWT tokens and enforce role-based access control.
+
+### AuthUser
+
+Base authenticated user extractor.
+
+<ParamField path="AuthUser" type="struct">
+  Extracts and validates JWT claims from Authorization header.
+</ParamField>
+
+```rust
+pub struct AuthUser(pub Claims);
+```
+
+Implements `FromRequest` to extract Bearer token from header and validate JWT signature.
+
+**Usage example**:
+
+```rust
+async fn my_endpoint(auth: AuthUser) -> ApiResult<HttpResponse> {
+    let user_id = &auth.0.sub;
+    let email = &auth.0.email;
+    // ...
+}
+```
+
+### AdminUser
+
+Admin-only extractor.
+
+<ParamField path="AdminUser" type="struct">
+  Validates JWT and enforces admin role requirement.
+</ParamField>
+
+```rust
+pub struct AdminUser(pub Claims);
+```
+
+**Example from source** (authentication.rs:32-42):
+
+```rust
+fn from_request(req: &HttpRequest, _: &mut Payload) -> Self::Future {
+    ready(
+        extract_claims(req).and_then(|claims| {
+            if claims.is_admin() {
+                Ok(AdminUser(claims))
+            } else {
+                Err(ApiError::Forbidden("Admin access required".to_string()))
+            }
+        })
+    )
+}
+```
+
+### ModeratorUser
+
+Moderator or admin extractor.
+
+<ParamField path="ModeratorUser" type="struct">
+  Validates JWT and requires admin or moderator role.
+</ParamField>
+
+```rust
+pub struct ModeratorUser(pub Claims);
+```
+
+Accepts users with "admin" or "moderator" roles.
+
+### PremiumUser
+
+Premium tier extractor.
+
+<ParamField path="PremiumUser" type="struct">
+  Validates JWT and requires admin, moderator, or premium role.
+</ParamField>
+
+```rust
+pub struct PremiumUser(pub Claims);
+```
+
+### RoleUser
+
+Generic role extractor with flexible validation.
+
+<ParamField path="RoleUser" type="struct">
+  Extracts claims with helper methods for role checking.
+</ParamField>
+
+```rust
+pub struct RoleUser(pub Claims);
+
+impl RoleUser {
+    pub fn has_role(&self, role: &str) -> bool
+    pub fn has_any_role(&self, roles: &[&str]) -> bool
+    pub fn is_admin(&self) -> bool
+    pub fn user_id(&self) -> &str
+    pub fn email(&self) -> &str
+    pub fn role(&self) -> &str
+}
+```
+
+**Usage example**:
+
+```rust
+async fn flexible_endpoint(user: RoleUser) -> ApiResult<HttpResponse> {
+    if user.has_any_role(&["admin", "premium"]) {
+        // Premium features
+    }
+}
+```
+
+---
+
+## Persistence Layer
+
+Repository implementations using PostgreSQL and SQLx.
+
+### PostgresUserRepository
+
+PostgreSQL implementation of UserRepository trait.
+
+<ParamField path="PostgresUserRepository" type="struct">
+  User repository using SQLx PgPool for database access.
+</ParamField>
+
+#### Constructor
+
+```rust
+pub fn new(pool: PgPool) -> Self
+```
+
+#### Implementation Details
+
+**create**
+
+```rust
+async fn create(&self, user: &User) -> Result<User, ApiError>
+```
+
+Inserts new user record with RETURNING clause to get created entity.
+
+**Example from source** (user_repository.rs:21-42):
+
+```rust
+let query = r#"
+    INSERT INTO users (id, email, username, password_hash, role, is_active, created_at, updated_at)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    RETURNING *
+"#;
+
+let created_user = sqlx::query_as::<_, User>(query)
+    .bind(&user.id)
+    .bind(&user.email.as_str())
+    .bind(&user.username.as_str())
+    .bind(&user.password_hash)
+    .bind(user.role.as_str())
+    .bind(user.is_active)
+    .bind(user.created_at)
+    .bind(user.updated_at)
+    .fetch_one(&self.pool)
+    .await
+    .map_err(|e| ApiError::DatabaseError(e.to_string()))?;
+```
+
+**get_by_id**
+
+```rust
+async fn get_by_id(&self, id: &str) -> Result<Option<User>, ApiError>
+```
+
+Uses `query_as` with `fetch_optional` for automatic deserialization.
+
+**get_by_email**
+
+```rust
+async fn get_by_email(&self, email: &str) -> Result<Option<User>, ApiError>
+```
+
+Lookup by email address (takes string, not EmailAddress value object).
+
+**get_paginated**
+
+```rust
+async fn get_paginated(&self, page: i32, per_page: i32) -> Result<(Vec<User>, i32), ApiError>
+```
+
+Uses LIMIT and OFFSET for pagination. Returns users and total count.
+
+**update**
+
+```rust
+async fn update(&self, user: &User) -> Result<(), ApiError>
+```
+
+Updates all mutable fields and refreshes updated_at timestamp.
+
+**delete**
+
+```rust
+async fn delete(&self, id: &str) -> Result<bool, ApiError>
+```
+
+Returns true if row was deleted, false if not found.
+
+**count**
+
+```rust
+async fn count(&self) -> Result<i32, ApiError>
+```
+
+Returns total user count.
+
+**exists_by_email**
+
+```rust
+async fn exists_by_email(&self, email: &str) -> Result<bool, ApiError>
+```
+
+Efficient existence check using EXISTS clause.
+
+---
+
+### PostgresTestItemRepository
+
+PostgreSQL implementation of TestItemRepository trait.
+
+<ParamField path="PostgresTestItemRepository" type="struct">
+  Test item repository using SQLx PgPool.
+</ParamField>
+
+#### Constructor
+
+```rust
+pub fn new(pool: PgPool) -> Self
+```
+
+#### Methods
+
+Implements all TestItemRepository trait methods:
+- `create` - Insert with RETURNING
+- `get_by_id` - Fetch by primary key
+- `get_all` - Fetch all ordered by created_at
+- `get_paginated` - Paginated fetch
+- `update` - Update fields and timestamp
+- `delete` - Remove by ID
+- `count` - Total count
+
+All methods use `query_as` for automatic deserialization via TestItem's FromRow implementation.
+
+---
+
+## Helper Types
+
+### PaginationQuery
+
+```rust
+pub struct PaginationQuery {
+    pub page: Option<i32>,
+    pub per_page: Option<i32>,
+}
+```
+
+Query parameter struct for pagination endpoints. Controllers provide defaults (page=1, per_page=20).
+
+---
+
+## Design Patterns
+
+### Dependency Injection
+
+Controllers receive services via `web::Data<Arc<Service>>` injected by Actix-web.
+
+### Request Extractors
+
+Authentication and validation logic is encapsulated in extractors (AuthUser, AdminUser, ValidatedJson).
+
+### Error Handling
+
+All handlers return `ApiResult<HttpResponse>` which automatically converts errors to HTTP responses.
+
+### Repository Pattern
+
+Database access is abstracted behind trait interfaces, allowing for testing and swapping implementations.
+
+---
+
+## Related Documentation
+
+- [Application Layer](/api/application) - Services called by controllers
+- [Interfaces Layer](/api/interfaces) - Repository traits implemented here
+- [Bootstrap Module](/api/bootstrap) - AppState dependency injection

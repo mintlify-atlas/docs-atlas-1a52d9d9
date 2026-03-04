@@ -1,0 +1,413 @@
+---
+title: 'Bootstrap Module'
+description: 'Application state, dependency injection, and service providers'
+icon: 'rocket'
+---
+
+The bootstrap module handles application initialization, dependency injection, and service registration. It wires together all layers of the application.
+
+## AppState
+
+Central dependency injection container managing all services and shared resources.
+
+<ParamField path="AppState" type="struct">
+  Global application state containing configuration, database pool, and all services.
+</ParamField>
+
+### Structure
+
+```rust
+#[derive(Clone)]
+pub struct AppState {
+    pub config: Arc<AppConfig>,
+    pub pool: PgPool,
+    pub auth_service: Arc<AuthService>,
+    pub user_service: Arc<UserService>,
+    pub test_item_service: Arc<TestItemService>,
+}
+```
+
+<ParamField path="config" type="Arc<AppConfig>">
+  Application configuration (JWT secret, database URL, etc.)
+</ParamField>
+
+<ParamField path="pool" type="PgPool">
+  SQLx PostgreSQL connection pool
+</ParamField>
+
+<ParamField path="auth_service" type="Arc<AuthService>">
+  Authentication service instance
+</ParamField>
+
+<ParamField path="user_service" type="Arc<UserService>">
+  User management service instance
+</ParamField>
+
+<ParamField path="test_item_service" type="Arc<TestItemService>">
+  Test item service instance
+</ParamField>
+
+### Constructor
+
+```rust
+pub fn new(config: AppConfig, pg_pool: PgPool) -> Self
+```
+
+Initializes all dependencies and wires them together.
+
+**Example from source** (app_state.rs:26-65):
+
+```rust
+pub fn new(config: AppConfig, pg_pool: PgPool) -> Self {
+    let config = Arc::new(config);
+    
+    // ============================================
+    // Repositories
+    // ============================================
+    let user_repository: Arc<dyn UserRepository> =
+        Arc::new(PostgresUserRepository::new(pg_pool.clone()));
+    
+    let test_item_repository: Arc<dyn TestItemRepository> =
+        Arc::new(PostgresTestItemRepository::new(pg_pool.clone()));
+
+    // ============================================
+    // Services
+    // ============================================
+    let auth_service = Arc::new(AuthService::new(
+        user_repository.clone(),
+        config.clone(),
+    ));
+
+    let user_service = Arc::new(UserService::new(
+        user_repository.clone(),
+        config.clone(),
+    ));
+
+    let test_item_service = Arc::new(TestItemService::new(
+        test_item_repository.clone(),
+    ));
+
+    // ============================================
+    // Return AppState
+    // ============================================
+    Self {
+        config,
+        pool: pg_pool,
+        auth_service,
+        user_service,
+        test_item_service,
+    }
+}
+```
+
+### Dependency Graph
+
+The constructor establishes the following dependency graph:
+
+```
+AppState
+├── config: Arc<AppConfig>
+├── pool: PgPool
+├── auth_service: Arc<AuthService>
+│   ├── user_repository: Arc<dyn UserRepository>
+│   │   └── PostgresUserRepository(pool)
+│   └── config: Arc<AppConfig>
+├── user_service: Arc<UserService>
+│   ├── user_repository: Arc<dyn UserRepository> (shared)
+│   └── config: Arc<AppConfig> (shared)
+└── test_item_service: Arc<TestItemService>
+    └── test_item_repository: Arc<dyn TestItemRepository>
+        └── PostgresTestItemRepository(pool)
+```
+
+### Usage in Main
+
+AppState is typically created in main.rs and passed to Actix-web:
+
+```rust
+let app_state = AppState::new(config, pg_pool);
+
+HttpServer::new(move || {
+    App::new()
+        .app_data(web::Data::new(app_state.clone()))
+        .app_data(web::Data::new(app_state.config.clone()))
+        .app_data(web::Data::new(app_state.auth_service.clone()))
+        .app_data(web::Data::new(app_state.user_service.clone()))
+        .app_data(web::Data::new(app_state.test_item_service.clone()))
+        // ... routes
+})
+```
+
+### Adding New Services
+
+To add a new service to AppState:
+
+1. Add field to struct:
+
+```rust
+pub struct AppState {
+    // ... existing fields
+    pub new_service: Arc<NewService>,
+}
+```
+
+2. Create repository and service in constructor:
+
+```rust
+let new_repository: Arc<dyn NewRepository> =
+    Arc::new(PostgresNewRepository::new(pg_pool.clone()));
+
+let new_service = Arc::new(NewService::new(new_repository));
+```
+
+3. Add to Self initialization:
+
+```rust
+Self {
+    // ... existing fields
+    new_service,
+}
+```
+
+4. Register in Actix app:
+
+```rust
+.app_data(web::Data::new(app_state.new_service.clone()))
+```
+
+---
+
+## Service Providers
+
+Service provider pattern for modular service registration (currently under development).
+
+<ParamField path="ServiceProvider" type="trait">
+  Trait for registering and booting services.
+</ParamField>
+
+### ServiceProvider Trait
+
+```rust
+pub trait ServiceProvider: Send + Sync {
+    /// Unique name for this provider
+    fn name(&self) -> &str;
+    
+    /// Register services in the container
+    fn register(&self, container: &mut ServiceContainer);
+    
+    /// Boot services (optional)
+    fn boot(&self, _container: &ServiceContainer) {
+        // Default: do nothing
+    }
+}
+```
+
+<ParamField path="name" type="fn() -> &str">
+  Returns unique identifier for the provider
+</ParamField>
+
+<ParamField path="register" type="fn(&mut ServiceContainer)">
+  Registers services in dependency injection container
+</ParamField>
+
+<ParamField path="boot" type="fn(&ServiceContainer)">
+  Optional initialization logic after all providers are registered
+</ParamField>
+
+### ProviderRegistry
+
+Manages collection of service providers with two-phase initialization.
+
+<ParamField path="ProviderRegistry" type="struct">
+  Registry for managing service providers.
+</ParamField>
+
+```rust
+pub struct ProviderRegistry {
+    providers: Vec<Box<dyn ServiceProvider>>,
+}
+```
+
+#### Methods
+
+**new**
+
+```rust
+pub fn new() -> Self
+```
+
+Creates empty provider registry.
+
+**register**
+
+```rust
+pub fn register<P: ServiceProvider + 'static>(&mut self, provider: P)
+```
+
+Adds provider to registry.
+
+<ParamField path="provider" type="P: ServiceProvider">
+  Service provider to register
+</ParamField>
+
+**boot_all**
+
+```rust
+pub fn boot_all(&self, container: &mut ServiceContainer)
+```
+
+Executes two-phase initialization:
+1. Phase 1: Calls `register()` on all providers
+2. Phase 2: Calls `boot()` on all providers
+
+**Example from source** (providers.rs:36-48):
+
+```rust
+pub fn boot_all(&self, container: &mut ServiceContainer) {
+    // Phase 1: Register
+    for provider in &self.providers {
+        tracing::debug!("Registering provider: {}", provider.name());
+        provider.register(container);
+    }
+    
+    // Phase 2: Boot
+    for provider in &self.providers {
+        tracing::debug!("Booting provider: {}", provider.name());
+        provider.boot(container);
+    }
+}
+```
+
+### Example Provider Implementation
+
+```rust
+struct AuthServiceProvider;
+
+impl ServiceProvider for AuthServiceProvider {
+    fn name(&self) -> &str {
+        "AuthServiceProvider"
+    }
+    
+    fn register(&self, container: &mut ServiceContainer) {
+        // Register user repository
+        container.singleton::<Arc<dyn UserRepository>>(|| {
+            Arc::new(PostgresUserRepository::new(container.get::<PgPool>()))
+        });
+        
+        // Register auth service
+        container.singleton::<Arc<AuthService>>(|| {
+            Arc::new(AuthService::new(
+                container.get::<Arc<dyn UserRepository>>(),
+                container.get::<Arc<AppConfig>>(),
+            ))
+        });
+    }
+    
+    fn boot(&self, container: &ServiceContainer) {
+        // Optional: Run any initialization code
+        tracing::info!("Auth service initialized");
+    }
+}
+```
+
+### Using Providers
+
+```rust
+let mut registry = ProviderRegistry::new();
+registry.register(AuthServiceProvider);
+registry.register(UserServiceProvider);
+registry.register(TestItemServiceProvider);
+
+let mut container = ServiceContainer::new();
+registry.boot_all(&mut container);
+```
+
+---
+
+## Macros
+
+Bootstrap module provides macros for reducing boilerplate (implementation details in macros.rs).
+
+### register_services! (Future)
+
+Macro for registering multiple services at once:
+
+```rust
+let app = register_services!(
+    app,
+    app_state,
+    config,
+    pool,
+    auth_service,
+    user_service,
+    test_item_service
+);
+```
+
+---
+
+## Design Patterns
+
+### Dependency Injection
+
+AppState implements constructor injection, creating all dependencies in one place and passing them to consumers.
+
+### Service Locator
+
+AppState acts as a service locator, providing access to all application services.
+
+### Shared Ownership
+
+All services use `Arc` for thread-safe shared ownership, allowing cloning without data duplication.
+
+### Two-Phase Initialization
+
+Provider registry separates registration (phase 1) from bootstrapping (phase 2), allowing providers to depend on services registered by other providers.
+
+---
+
+## Best Practices
+
+### Repository Trait Objects
+
+Always use `Arc<dyn Trait>` for repositories to enable dependency inversion:
+
+```rust
+let user_repository: Arc<dyn UserRepository> =
+    Arc::new(PostgresUserRepository::new(pg_pool.clone()));
+```
+
+### Shared Dependencies
+
+Reuse Arc clones for dependencies used by multiple services:
+
+```rust
+let user_repository: Arc<dyn UserRepository> = /* ... */;
+
+let auth_service = Arc::new(AuthService::new(
+    user_repository.clone(),  // Clone Arc, not data
+    config.clone(),
+));
+
+let user_service = Arc::new(UserService::new(
+    user_repository.clone(),  // Same repository instance
+    config.clone(),
+));
+```
+
+### Configuration
+
+Wrap configuration in Arc once and share:
+
+```rust
+let config = Arc::new(config);  // Wrap once
+// Pass config.clone() to all services
+```
+
+---
+
+## Related Documentation
+
+- [Application Layer](/api/application) - Services managed by AppState
+- [Infrastructure Layer](/api/infrastructure) - Repository implementations created in AppState
+- [Interfaces Layer](/api/interfaces) - Trait types used in dependency injection

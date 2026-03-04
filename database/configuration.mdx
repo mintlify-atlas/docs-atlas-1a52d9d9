@@ -1,0 +1,267 @@
+---
+title: Database Configuration
+description: Learn how to configure and connect to databases in Ironclad
+---
+
+## Overview
+
+Ironclad supports multiple database systems with flexible configuration options. The framework uses environment variables for configuration and provides compile-time checked database connections through SQLx.
+
+## Environment Configuration
+
+Database settings are configured through environment variables in your `.env` file:
+
+```bash
+# PostgreSQL Database
+DATABASE_URL=postgresql://postgres:password@localhost:5432/template_db
+DB_MAX_CONNECTIONS=5
+DB_MIN_CONNECTIONS=1
+DB_ACQUIRE_TIMEOUT=5
+DB_IDLE_TIMEOUT=300
+
+# MongoDB Configuration (Optional)
+MONGODB_URL=mongodb://localhost:27017
+MONGODB_NAME=template_db
+```
+
+## Configuration Structure
+
+Ironclad uses strongly-typed configuration structs defined in `src/config/mod.rs`:
+
+### PostgreSQL Configuration
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PostgresConfig {
+    pub postgres_url: String,
+    pub max_connections: u32,
+    pub min_connections: u32,
+    pub acquire_timeout: u64,
+    pub idle_timeout: u64,
+}
+```
+
+### MongoDB Configuration
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MongoDBConfig {
+    pub mongo_url: String,
+    pub database_name: String,
+}
+```
+
+## Loading Configuration
+
+Configuration is loaded from environment variables using the `AppConfig::from_env()` method:
+
+```rust
+use ironclad::config::AppConfig;
+
+#[actix_web::main]
+async fn main() -> std::io::Result<()> {
+    // Load configuration from .env file
+    let config = AppConfig::from_env()
+        .expect("Failed to load configuration");
+    
+    // Access database configuration
+    println!("Database URL: {}", config.db_postgres.postgres_url);
+    println!("Max connections: {}", config.db_postgres.max_connections);
+    
+    Ok(())
+}
+```
+
+## Connection Pool Settings
+
+### Max Connections
+
+The maximum number of database connections in the pool:
+
+```bash
+DB_MAX_CONNECTIONS=5
+```
+
+**Recommendations:**
+- **Development**: 5-10 connections
+- **Production**: Based on your database server capacity and application load
+- Ensure your database server can handle the configured number of connections
+
+### Min Connections
+
+The minimum number of idle connections to maintain:
+
+```bash
+DB_MIN_CONNECTIONS=1
+```
+
+**Thread Safety Note:** You must ensure that the database can handle the minimum number of connections configured here, otherwise the application may fail to start.
+
+### Acquire Timeout
+
+Maximum time (in seconds) to wait for a connection from the pool:
+
+```bash
+DB_ACQUIRE_TIMEOUT=5
+```
+
+**Thread Safety Note:** Setting this too low may cause transient failures under load, setting it too high may cause resource exhaustion.
+
+### Idle Timeout
+
+Maximum time (in seconds) a connection can remain idle before being closed:
+
+```bash
+DB_IDLE_TIMEOUT=300
+```
+
+**Thread Safety Note:** Setting this too low may cause connections to be closed prematurely, setting it too high may delay error detection.
+
+## Connection Pool Initialization
+
+Here's how Ironclad initializes the PostgreSQL connection pool:
+
+```rust
+use sqlx::postgres::PgPoolOptions;
+use sqlx::PgPool;
+use std::time::Duration;
+
+pub async fn init_pool(config: &PostgresConfig) -> Result<PgPool, ApiError> {
+    PgPoolOptions::new()
+        .max_connections(config.max_connections)
+        .min_connections(config.min_connections)
+        .acquire_timeout(Duration::from_secs(config.acquire_timeout))
+        .idle_timeout(Duration::from_secs(config.idle_timeout))
+        .connect(&config.postgres_url)
+        .await
+        .map_err(|e| ApiError::DatabaseError(e.to_string()))
+}
+```
+
+## Database URL Format
+
+### PostgreSQL
+
+```
+postgresql://[user[:password]@][host][:port][/database][?options]
+```
+
+**Examples:**
+
+```bash
+# Local development
+DATABASE_URL=postgresql://postgres:password@localhost:5432/myapp
+
+# Remote server with SSL
+DATABASE_URL=postgresql://user:pass@db.example.com:5432/myapp?sslmode=require
+
+# With connection options
+DATABASE_URL=postgresql://user:pass@localhost/myapp?sslmode=disable&application_name=ironclad
+```
+
+### MongoDB
+
+```
+mongodb://[username:password@]host[:port][/database][?options]
+```
+
+**Examples:**
+
+```bash
+# Local development
+MONGODB_URL=mongodb://localhost:27017
+
+# With authentication
+MONGODB_URL=mongodb://user:password@localhost:27017
+
+# MongoDB Atlas
+MONGODB_URL=mongodb+srv://user:password@cluster.mongodb.net
+```
+
+## Multiple Database Support
+
+Ironclad can work with multiple database systems simultaneously. The `AppConfig` struct includes optional database configurations:
+
+```rust
+pub struct AppConfig {
+    pub server: ServerConfig,
+    pub db_postgres: PostgresConfig,
+    pub db_mysql: Option<MySqlConfig>,
+    pub mongodb: Option<MongoDBConfig>,
+    pub jwt: JwtConfig,
+    pub bcrypt: BcryptConfig,
+}
+```
+
+MongoDB is optional and only initialized if `MONGODB_URL` is set in the environment.
+
+## Troubleshooting
+
+### Connection Refused
+
+**Error:** `Connection refused (os error 111)`
+
+**Solutions:**
+- Verify the database server is running
+- Check the host and port in `DATABASE_URL`
+- Ensure firewall rules allow the connection
+- For Docker, use the container name instead of `localhost`
+
+### Too Many Connections
+
+**Error:** `FATAL: sorry, too many clients already`
+
+**Solutions:**
+- Reduce `DB_MAX_CONNECTIONS` value
+- Increase the database server's max connections limit
+- Check for connection leaks in your code
+
+### Acquire Timeout
+
+**Error:** `timed out while waiting for an open connection`
+
+**Solutions:**
+- Increase `DB_ACQUIRE_TIMEOUT` value
+- Increase `DB_MAX_CONNECTIONS` to handle more concurrent requests
+- Optimize slow queries that hold connections
+- Check for connections not being properly returned to the pool
+
+### Invalid Configuration
+
+**Error:** `Failed to load configuration`
+
+**Solutions:**
+- Ensure `.env` file exists in the project root
+- Verify all required environment variables are set
+- Check for invalid values (e.g., non-numeric values for numeric fields)
+- Use `.env.example` as a reference for required variables
+
+### SSL Connection Issues
+
+**Error:** `SSL error: certificate verify failed`
+
+**Solutions:**
+- For development, add `?sslmode=disable` to your `DATABASE_URL`
+- For production, ensure proper SSL certificates are configured
+- Use `?sslmode=require` to enforce SSL in production
+
+## Best Practices
+
+1. **Never commit `.env` files**: Use `.env.example` for documentation
+2. **Use different credentials per environment**: Development, staging, and production should have separate database credentials
+3. **Monitor connection pool usage**: Watch for connection pool exhaustion in production
+4. **Set appropriate timeouts**: Balance between user experience and resource usage
+5. **Enable SSL in production**: Always use encrypted connections for production databases
+6. **Use connection pooling**: SQLx's built-in pooling is production-ready and efficient
+7. **Validate configuration on startup**: The framework validates configuration when loading from environment
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="PostgreSQL Setup" icon="database" href="/database/postgres">
+    Learn about PostgreSQL-specific features and usage
+  </Card>
+  <Card title="Database Migrations" icon="arrows-rotate" href="/database/migrations">
+    Set up and manage SQLx migrations
+  </Card>
+</CardGroup>

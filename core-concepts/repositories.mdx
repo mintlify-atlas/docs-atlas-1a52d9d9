@@ -1,0 +1,572 @@
+---
+title: Repositories
+description: Implement the repository pattern for clean data access in Ironclad
+---
+
+Repositories provide a clean abstraction over data persistence. They implement the Repository Pattern, separating domain logic from infrastructure concerns like databases.
+
+## Repository Architecture
+
+Ironclad uses a trait-based repository pattern:
+
+1. **Trait definition** (`src/interfaces/repositories/`) - Abstract data access contract
+2. **Implementation** (`src/infrastructure/persistence/`) - Concrete database implementation
+3. **Dependency injection** - Services depend on traits, not implementations
+
+<Note>
+Repositories have **no knowledge of business rules**. They receive validated entities and persist them.
+</Note>
+
+## Repository Trait
+
+Define the data access contract using traits:
+
+```rust src/interfaces/repositories/user_repository.rs
+use crate::domain::entities::User;
+use crate::errors::ApiError;
+use async_trait::async_trait;
+
+/// User Repository - Data access contract
+#[async_trait]
+pub trait UserRepository: Send + Sync {
+    /// Create new user
+    async fn create(&self, user: &User) -> Result<User, ApiError>;
+
+    /// Get user by ID
+    async fn get_by_id(&self, id: &str) -> Result<Option<User>, ApiError>;
+
+    /// Get user by email
+    async fn get_by_email(&self, email: &str) -> Result<Option<User>, ApiError>;
+
+    /// Get all users
+    async fn get_all(&self) -> Result<Vec<User>, ApiError>;
+
+    /// Get users with pagination
+    async fn get_paginated(&self, page: i32, per_page: i32) -> Result<(Vec<User>, i32), ApiError>;
+
+    /// Update user
+    async fn update(&self, user: &User) -> Result<(), ApiError>;
+
+    /// Delete user by ID
+    async fn delete(&self, id: &str) -> Result<bool, ApiError>;
+
+    /// Count total users
+    async fn count(&self) -> Result<i32, ApiError>;
+
+    /// Check if user exists with this email
+    async fn exists_by_email(&self, email: &str) -> Result<bool, ApiError>;
+}
+```
+
+<Tip>
+Note the trait methods:
+- Accept **entities** as parameters (already validated)
+- Accept **primitives** for queries (IDs, emails)
+- Return **entities** or primitive types
+- Use `async_trait` for async methods
+</Tip>
+
+## Repository Implementation
+
+Implement the trait for your database (PostgreSQL example):
+
+```rust src/infrastructure/persistence/postgres/user_repository.rs
+use sqlx::PgPool;
+use async_trait::async_trait;
+use chrono::Utc;
+
+use crate::domain::entities::User;
+use crate::errors::ApiError;
+use crate::interfaces::repositories::UserRepository;
+
+pub struct PostgresUserRepository {
+    pool: PgPool,
+}
+
+impl PostgresUserRepository {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl UserRepository for PostgresUserRepository {
+    async fn create(&self, user: &User) -> Result<User, ApiError> {
+        let query = r#"
+            INSERT INTO users (id, email, username, password_hash, role, is_active, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            RETURNING *
+        "#;
+        
+        let created_user = sqlx::query_as::<_, User>(query)
+            .bind(&user.id)
+            .bind(&user.email.as_str())  // Extract primitive from Value Object
+            .bind(&user.username.as_str())
+            .bind(&user.password_hash)
+            .bind(user.role.as_str())
+            .bind(user.is_active)
+            .bind(user.created_at)
+            .bind(user.updated_at)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| ApiError::DatabaseError(e.to_string()))?;
+
+        Ok(created_user)
+    }
+
+    async fn get_by_id(&self, id: &str) -> Result<Option<User>, ApiError> {
+        let query = "SELECT * FROM users WHERE id = $1";
+
+        let user = sqlx::query_as::<_, User>(query)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| ApiError::DatabaseError(e.to_string()))?;
+
+        Ok(user)
+    }
+
+    async fn get_by_email(&self, email: &str) -> Result<Option<User>, ApiError> {
+        let query = "SELECT * FROM users WHERE email = $1";
+
+        let user = sqlx::query_as::<_, User>(query)
+            .bind(email)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| ApiError::DatabaseError(e.to_string()))?;
+
+        Ok(user)
+    }
+
+    async fn get_paginated(&self, page: i32, per_page: i32) -> Result<(Vec<User>, i32), ApiError> {
+        let offset = (page - 1) * per_page;
+
+        let query = r#"
+            SELECT * FROM users
+            ORDER BY created_at DESC
+            LIMIT $1 OFFSET $2
+        "#;
+
+        let users = sqlx::query_as::<_, User>(query)
+            .bind(per_page)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| ApiError::DatabaseError(e.to_string()))?;
+
+        let total = self.count().await?;
+
+        Ok((users, total))
+    }
+
+    async fn update(&self, user: &User) -> Result<(), ApiError> {
+        let query = r#"
+            UPDATE users
+            SET email = $1, username = $2, password_hash = $3, role = $4, 
+                is_active = $5, updated_at = $6
+            WHERE id = $7
+        "#;
+
+        sqlx::query(query)
+            .bind(&user.email.as_str())
+            .bind(&user.username.as_str())
+            .bind(&user.password_hash)
+            .bind(user.role.as_str())
+            .bind(user.is_active)
+            .bind(Utc::now())
+            .bind(&user.id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| ApiError::DatabaseError(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, ApiError> {
+        let query = "DELETE FROM users WHERE id = $1";
+
+        let result = sqlx::query(query)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| ApiError::DatabaseError(e.to_string()))?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn count(&self) -> Result<i32, ApiError> {
+        let query = "SELECT COUNT(*) as count FROM users";
+
+        let row: (i64,) = sqlx::query_as(query)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| ApiError::DatabaseError(e.to_string()))?;
+
+        Ok(row.0 as i32)
+    }
+
+    async fn exists_by_email(&self, email: &str) -> Result<bool, ApiError> {
+        let query = "SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)";
+
+        let row: (bool,) = sqlx::query_as(query)
+            .bind(email)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| ApiError::DatabaseError(e.to_string()))?;
+
+        Ok(row.0)
+    }
+}
+```
+
+## Key Implementation Patterns
+
+### Extracting Primitives from Value Objects
+
+Repositories decompose entities to extract primitive values:
+
+```rust
+.bind(&user.email.as_str())  // EmailAddress -> &str
+.bind(&user.username.as_str())  // Username -> &str
+.bind(user.role.as_str())  // Role -> &str
+```
+
+<Warning>
+Repositories must extract primitives for database binding. Never persist Value Objects directly.
+</Warning>
+
+### Hydrating Entities from Database
+
+SQLx automatically maps rows to entities via `FromRow`:
+
+```rust
+let user = sqlx::query_as::<_, User>(query)
+    .bind(id)
+    .fetch_optional(&self.pool)
+    .await?
+```
+
+The entity's `FromRow` implementation uses `from_trusted()` for Value Objects:
+
+```rust
+impl sqlx::FromRow<'_, PgRow> for User {
+    fn from_row(row: &PgRow) -> Result<Self, sqlx::Error> {
+        Ok(User {
+            id: row.try_get("id")?,
+            email: EmailAddress::from_trusted(row.try_get("email")?),
+            username: Username::from_trusted(row.try_get("username")?),
+            // ...
+        })
+    }
+}
+```
+
+## Simpler Repository Example
+
+```rust src/interfaces/repositories/test_item_repository.rs
+use crate::domain::entities::TestItem;
+use crate::errors::ApiError;
+use async_trait::async_trait;
+
+#[async_trait]
+pub trait TestItemRepository: Send + Sync {
+    async fn create(&self, item: &TestItem) -> Result<TestItem, ApiError>;
+    async fn get_by_id(&self, id: &str) -> Result<Option<TestItem>, ApiError>;
+    async fn get_all(&self) -> Result<Vec<TestItem>, ApiError>;
+    async fn get_paginated(&self, page: i32, per_page: i32) -> Result<(Vec<TestItem>, i32), ApiError>;
+    async fn update(&self, item: &TestItem) -> Result<(), ApiError>;
+    async fn delete(&self, id: &str) -> Result<bool, ApiError>;
+    async fn count(&self) -> Result<i32, ApiError>;
+}
+```
+
+```rust src/infrastructure/persistence/postgres/test_item_repository.rs
+use sqlx::PgPool;
+use async_trait::async_trait;
+use chrono::Utc;
+
+use crate::domain::entities::TestItem;
+use crate::errors::ApiError;
+use crate::interfaces::repositories::TestItemRepository;
+
+pub struct PostgresTestItemRepository {
+    pool: PgPool,
+}
+
+impl PostgresTestItemRepository {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl TestItemRepository for PostgresTestItemRepository {
+    async fn create(&self, item: &TestItem) -> Result<TestItem, ApiError> {
+        let query = r#"
+            INSERT INTO test_items (id, subject, optional_field, created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING *
+        "#;
+
+        let created_item = sqlx::query_as::<_, TestItem>(query)
+            .bind(&item.id)
+            .bind(&item.subject)
+            .bind(&item.optional_field)
+            .bind(item.created_at)
+            .bind(item.updated_at)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| ApiError::DatabaseError(e.to_string()))?;
+
+        Ok(created_item)
+    }
+
+    async fn get_by_id(&self, id: &str) -> Result<Option<TestItem>, ApiError> {
+        let query = "SELECT * FROM test_items WHERE id = $1";
+
+        let item = sqlx::query_as::<_, TestItem>(query)
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| ApiError::DatabaseError(e.to_string()))?;
+
+        Ok(item)
+    }
+
+    async fn get_paginated(&self, page: i32, per_page: i32) -> Result<(Vec<TestItem>, i32), ApiError> {
+        let offset = (page - 1) * per_page;
+
+        let query = r#"
+            SELECT * FROM test_items
+            ORDER BY created_at DESC
+            LIMIT $1 OFFSET $2
+        "#;
+
+        let items = sqlx::query_as::<_, TestItem>(query)
+            .bind(per_page)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| ApiError::DatabaseError(e.to_string()))?;
+
+        let total = self.count().await?;
+
+        Ok((items, total))
+    }
+
+    async fn update(&self, item: &TestItem) -> Result<(), ApiError> {
+        let query = r#"
+            UPDATE test_items
+            SET subject = $1, optional_field = $2, updated_at = $3
+            WHERE id = $4
+        "#;
+
+        sqlx::query(query)
+            .bind(&item.subject)
+            .bind(&item.optional_field)
+            .bind(Utc::now())
+            .bind(&item.id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| ApiError::DatabaseError(e.to_string()))?;
+
+        Ok(())
+    }
+
+    async fn delete(&self, id: &str) -> Result<bool, ApiError> {
+        let query = "DELETE FROM test_items WHERE id = $1";
+
+        let result = sqlx::query(query)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| ApiError::DatabaseError(e.to_string()))?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn count(&self) -> Result<i32, ApiError> {
+        let query = "SELECT COUNT(*) as count FROM test_items";
+
+        let row: (i64,) = sqlx::query_as(query)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| ApiError::DatabaseError(e.to_string()))?;
+
+        Ok(row.0 as i32)
+    }
+}
+```
+
+## Common Repository Patterns
+
+### Pagination
+
+```rust
+pub async fn get_paginated(
+    &self, 
+    page: i32, 
+    per_page: i32
+) -> Result<(Vec<User>, i32), ApiError> {
+    let offset = (page - 1) * per_page;
+
+    let query = r#"
+        SELECT * FROM users
+        ORDER BY created_at DESC
+        LIMIT $1 OFFSET $2
+    "#;
+
+    let users = sqlx::query_as::<_, User>(query)
+        .bind(per_page)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+    let total = self.count().await?;
+
+    Ok((users, total))
+}
+```
+
+### Existence Checks
+
+```rust
+pub async fn exists_by_email(&self, email: &str) -> Result<bool, ApiError> {
+    let query = "SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)";
+
+    let row: (bool,) = sqlx::query_as(query)
+        .bind(email)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| ApiError::DatabaseError(e.to_string()))?;
+
+    Ok(row.0)
+}
+```
+
+### Counting Records
+
+```rust
+pub async fn count(&self) -> Result<i32, ApiError> {
+    let query = "SELECT COUNT(*) as count FROM users";
+
+    let row: (i64,) = sqlx::query_as(query)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| ApiError::DatabaseError(e.to_string()))?;
+
+    Ok(row.0 as i32)
+}
+```
+
+### Deletion with Confirmation
+
+```rust
+pub async fn delete(&self, id: &str) -> Result<bool, ApiError> {
+    let query = "DELETE FROM users WHERE id = $1";
+
+    let result = sqlx::query(query)
+        .bind(id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| ApiError::DatabaseError(e.to_string()))?;
+
+    Ok(result.rows_affected() > 0)
+}
+```
+
+## Dependency Injection
+
+Services depend on the repository trait, not the implementation:
+
+```rust
+pub struct AuthService {
+    user_repository: Arc<dyn UserRepository>,  // Trait, not PostgresUserRepository
+    config: Arc<AppConfig>,
+}
+
+impl AuthService {
+    pub fn new(user_repository: Arc<dyn UserRepository>, config: Arc<AppConfig>) -> Self {
+        Self {
+            user_repository,
+            config,
+        }
+    }
+}
+```
+
+<Tip>
+This allows you to:
+- Swap implementations (PostgreSQL → MongoDB)
+- Mock repositories for testing
+- Change persistence without touching business logic
+</Tip>
+
+## Error Handling
+
+Convert database errors to application errors:
+
+```rust
+let user = sqlx::query_as::<_, User>(query)
+    .bind(id)
+    .fetch_optional(&self.pool)
+    .await
+    .map_err(|e| ApiError::DatabaseError(e.to_string()))?;
+```
+
+## Repository Responsibilities
+
+<Tip>
+**Repositories SHOULD:**
+- Execute SQL queries
+- Map database rows to entities
+- Extract primitives from Value Objects for queries
+- Handle database-specific errors
+- Implement query optimization
+
+**Repositories SHOULD NOT:**
+- Validate business rules
+- Contain business logic
+- Know about HTTP, controllers, or DTOs
+- Perform complex calculations
+</Tip>
+
+## Testing Repositories
+
+Test repositories using a test database or mocks:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::PgPool;
+
+    #[sqlx::test]
+    async fn test_create_user(pool: PgPool) {
+        let repo = PostgresUserRepository::new(pool);
+        
+        let email = EmailAddress::new("test@example.com".to_string()).unwrap();
+        let username = Username::new("testuser".to_string()).unwrap();
+        let user = User::new(email, username, "hash".to_string()).unwrap();
+        
+        let result = repo.create(&user).await;
+        assert!(result.is_ok());
+    }
+}
+```
+
+## Best Practices
+
+<Warning>
+- **Use parameterized queries** - Prevent SQL injection
+- **Handle Optional results** - Use `fetch_optional` for single records
+- **Return tuple for pagination** - `(Vec<T>, i32)` for items and total
+- **Use transactions for multi-step operations** - Ensure atomicity
+- **Keep queries simple** - Complex logic belongs in services
+</Warning>
+
+## Next Steps
+
+- Learn about [Services](/core-concepts/services) that use repositories
+- Understand [Entities](/core-concepts/entities-value-objects) that repositories persist
+- Explore database [configuration](/database/configuration)

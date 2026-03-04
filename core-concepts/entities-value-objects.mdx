@@ -1,0 +1,486 @@
+---
+title: Entities & Value Objects
+description: Build robust domain models with entities and Value Objects using smart constructors
+---
+
+Entities and Value Objects form the core of your domain model in Ironclad. They encapsulate business rules and ensure data integrity through the **smart constructor pattern**.
+
+## Domain-Driven Design Principles
+
+Ironclad follows DDD principles to prevent invalid state:
+
+<Note>
+**Core Principle:** Never use primitive types (`String`, `i32`) directly for domain concepts. Always wrap them in Value Objects with validation.
+</Note>
+
+### Separation of Concerns
+
+Validations are divided into three strict layers:
+
+1. **HTTP Layer (DTOs)** - Pure syntactic validation ("string must not be empty")
+2. **Application Layer (Services)** - Contextual rules requiring I/O ("email already exists")
+3. **Domain Layer (Value Objects)** - Immutable business rules ("username must be alphanumeric")
+
+## Value Objects
+
+Value Objects encapsulate primitive values with domain-specific validation.
+
+### Smart Constructor Pattern
+
+The smart constructor pattern ensures **only valid Value Objects can exist**:
+
+```rust src/domain/value_objects/email_address.rs
+use serde::{Deserialize, Serialize};
+use crate::errors::DomainError;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailAddress(String);
+
+impl EmailAddress {
+    /// Smart Constructor: Validates domain rules
+    pub fn new(value: String) -> Result<Self, DomainError> {
+        if value.trim().is_empty() || !value.contains('@') {
+            return Err(DomainError::Validation(
+                "Invalid email format at domain level".into()
+            ));
+        }
+        Ok(Self(value))
+    }
+
+    /// Hydration: Used EXCLUSIVELY by persistence layer
+    /// Assumes data is already valid from database
+    pub fn from_trusted(value: String) -> Self {
+        Self(value)
+    }
+
+    /// Extract primitive value for DTOs or database
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+```
+
+### Key Methods
+
+<ParamField path="new" type="fn(String) -> Result<Self, DomainError>">
+  The **smart constructor** that validates input and returns `Result`. This is the ONLY way to create a Value Object from untrusted input.
+</ParamField>
+
+<ParamField path="from_trusted" type="fn(String) -> Self">
+  Used EXCLUSIVELY by the repository layer when hydrating from database. Skips validation because database data is assumed valid.
+</ParamField>
+
+<ParamField path="as_str" type="fn(&self) -> &str">
+  Extracts the inner primitive value for use in queries, DTOs, or serialization.
+</ParamField>
+
+## Value Object with Complex Validation
+
+```rust src/domain/value_objects/username.rs
+use serde::{Deserialize, Serialize};
+use crate::errors::DomainError;
+use crate::shared::validator::validate_username;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Username(String);
+
+impl Username {
+    /// Smart Constructor: Fails if domain rules aren't met
+    pub fn new(value: String) -> Result<Self, DomainError> {
+        validate_username(&value)
+            .map_err(|_| DomainError::Validation("Invalid username format".into()))?;
+        Ok(Self(value))
+    }
+
+    /// Hydration from trusted source (database)
+    pub fn from_trusted(value: String) -> Self {
+        Self(value)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+```
+
+<Tip>
+The `validate_username` function can contain complex logic:
+- Alphanumeric characters only
+- Length constraints
+- Reserved word checks
+- Character restrictions
+</Tip>
+
+## Enum Value Objects
+
+Value Objects can also be enums for constrained sets:
+
+```rust src/domain/value_objects/role.rs
+use serde::{Deserialize, Serialize};
+use std::fmt;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum Role {
+    Admin,
+    User,
+    Moderator,
+    Premium,
+}
+
+impl Role {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Role::Admin => "admin",
+            Role::User => "user",
+            Role::Moderator => "moderator",
+            Role::Premium => "premium",
+        }
+    }
+
+    /// Parse role from string - returns Option for safety
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "admin" => Some(Role::Admin),
+            "user" => Some(Role::User),
+            "moderator" => Some(Role::Moderator),
+            "premium" => Some(Role::Premium),
+            _ => None,
+        }
+    }
+
+    pub fn is_admin(&self) -> bool {
+        matches!(self, Role::Admin)
+    }
+
+    pub fn can_moderate(&self) -> bool {
+        matches!(self, Role::Admin | Role::Moderator)
+    }
+}
+
+impl Default for Role {
+    fn default() -> Self {
+        Role::User
+    }
+}
+
+impl fmt::Display for Role {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+```
+
+## Entities
+
+Entities are domain objects with identity that compose Value Objects.
+
+### Entity with Smart Constructor
+
+```rust src/domain/entities/user.rs
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+use crate::domain::value_objects::{Role, Username, EmailAddress};
+use crate::errors::DomainError;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct User {
+    pub id: String,
+    pub email: EmailAddress,
+    pub username: Username,
+    pub password_hash: String,
+    pub role: Role,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl User {
+    /// Smart Constructor: Returns Result guaranteeing valid state
+    pub fn new(
+        email: EmailAddress,
+        username: Username,
+        password_hash: String
+    ) -> Result<Self, DomainError> {
+        let now = Utc::now();
+        Ok(Self {
+            id: Uuid::new_v4().to_string(),
+            email,
+            username,
+            password_hash,
+            role: Role::default(),
+            is_active: true,
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    /// Smart Constructor with specific role
+    pub fn new_with_role(
+        email: EmailAddress,
+        username: Username,
+        password_hash: String,
+        role: Role,
+    ) -> Result<Self, DomainError> {
+        let now = Utc::now();
+        Ok(Self {
+            id: Uuid::new_v4().to_string(),
+            email,
+            username,
+            password_hash,
+            role,
+            is_active: true,
+            created_at: now,
+            updated_at: now,
+        })
+    }
+}
+```
+
+<Note>
+Notice that entity constructors accept **Value Objects**, not primitives. This guarantees the entity is composed of already-validated components.
+</Note>
+
+## Entity Business Logic
+
+Entities contain behavior related to their state:
+
+```rust src/domain/entities/user.rs
+impl User {
+    // Query methods
+    pub fn is_admin(&self) -> bool {
+        self.role.is_admin()
+    }
+
+    pub fn can_moderate(&self) -> bool {
+        self.role.can_moderate()
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.is_active
+    }
+
+    // State mutation methods
+    pub fn update_email(&mut self, email: EmailAddress) {
+        self.email = email;
+        self.updated_at = Utc::now();
+    }
+
+    pub fn update_username(&mut self, username: Username) {
+        self.username = username;
+        self.updated_at = Utc::now();
+    }
+
+    pub fn change_role(&mut self, role: Role) {
+        self.role = role;
+        self.updated_at = Utc::now();
+    }
+
+    pub fn activate(&mut self) {
+        self.is_active = true;
+        self.updated_at = Utc::now();
+    }
+
+    pub fn deactivate(&mut self) {
+        self.is_active = false;
+        self.updated_at = Utc::now();
+    }
+}
+```
+
+<Warning>
+Mutation methods should accept **Value Objects**, not primitives, to maintain validation guarantees.
+</Warning>
+
+## Simpler Entity Example
+
+```rust src/domain/entities/test_item.rs
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TestItem {
+    pub id: String,
+    pub subject: String,
+    pub optional_field: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+impl TestItem {
+    pub fn new(subject: String, optional_field: Option<String>) -> Self {
+        let now = Utc::now();
+        Self {
+            id: Uuid::new_v4().to_string(),
+            subject,
+            optional_field,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    pub fn update_subject(&mut self, subject: String) {
+        self.subject = subject;
+        self.updated_at = Utc::now();
+    }
+
+    pub fn update_optional_field(&mut self, optional_field: Option<String>) {
+        self.optional_field = optional_field;
+        self.updated_at = Utc::now();
+    }
+}
+```
+
+## Database Hydration
+
+Entities implement SQLx's `FromRow` trait for database mapping:
+
+```rust src/domain/entities/user.rs
+use sqlx::postgres::PgRow;
+use sqlx::Row;
+
+impl sqlx::FromRow<'_, PgRow> for User {
+    fn from_row(row: &PgRow) -> Result<Self, sqlx::Error> {
+        let role_str: String = row.try_get("role")?;
+        let role = Role::from_str(&role_str)
+            .ok_or_else(|| sqlx::Error::Decode(
+                format!("Invalid role: {}", role_str).into()
+            ))?;
+
+        Ok(User {
+            id: row.try_get("id")?,
+            // Use from_trusted - we trust database integrity
+            email: EmailAddress::from_trusted(row.try_get("email")?),
+            username: Username::from_trusted(row.try_get("username")?),
+            password_hash: row.try_get("password_hash")?,
+            role,
+            is_active: row.try_get("is_active")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
+}
+```
+
+<Tip>
+Use `from_trusted()` when hydrating from the database because we assume data integrity. Use `new()` when creating from user input.
+</Tip>
+
+## DTO Conversion
+
+Entities provide methods to convert to response DTOs:
+
+```rust src/domain/entities/user.rs
+impl User {
+    pub fn to_response(&self) -> crate::application::dtos::UserResponse {
+        use crate::application::dtos::UserResponse;
+
+        UserResponse {
+            id: self.id.clone(),
+            email: self.email.as_str().to_string(),
+            username: self.username.as_str().to_string(),
+            role: self.role.to_string(),
+            is_active: self.is_active,
+            created_at: self.created_at.to_rfc3339(),
+            updated_at: self.updated_at.to_rfc3339(),
+        }
+    }
+}
+```
+
+## Complete Data Flow
+
+<Steps>
+
+### Client sends JSON
+
+Raw request data arrives at the controller.
+
+### DTO validation (HTTP Layer)
+
+```rust
+#[derive(Validate)]
+pub struct RegisterUserRequest {
+    #[validate(email)]
+    pub email: String,
+    #[validate(length(min = 3, max = 50))]
+    pub username: String,
+}
+```
+
+### Service receives validated DTO
+
+```rust
+pub async fn register(&self, request: RegisterUserRequest) -> Result<AuthResponse, ApiError>
+```
+
+### Create Value Objects (Domain Layer)
+
+```rust
+let email_vo = EmailAddress::new(request.email)?;  // Domain validation
+let username_vo = Username::new(request.username)?;  // Domain validation
+```
+
+### Create Entity
+
+```rust
+let user = User::new(email_vo, username_vo, password_hash)?;
+```
+
+### Persist to Repository
+
+```rust
+let created_user = self.user_repository.create(&user).await?;
+```
+
+### Repository extracts primitives
+
+```rust
+.bind(&user.email.as_str())  // Extract String from Value Object
+.bind(&user.username.as_str())
+```
+
+</Steps>
+
+## Benefits of Smart Constructors
+
+<Tip>
+**Type Safety:**
+- Compiler enforces use of Value Objects
+- Impossible to accidentally use raw `String` where `EmailAddress` is required
+
+**Validation Guarantee:**
+- If a `User` exists in memory, it's 100% valid
+- No need to re-validate domain objects
+
+**Centralized Logic:**
+- Validation rules defined once in Value Object
+- Changes propagate automatically throughout codebase
+
+**Testability:**
+- Easy to test validation logic in isolation
+- Mock entities with known-valid state
+</Tip>
+
+## Best Practices
+
+<Warning>
+**DO:**
+- Use Value Objects for all domain concepts
+- Accept Value Objects in entity constructors
+- Use `new()` for user input, `from_trusted()` for database
+- Keep validation logic in Value Objects
+
+**DON'T:**
+- Use primitives (`String`, `i32`) for domain concepts
+- Validate in multiple places
+- Create "anemic" entities with only getters/setters
+- Skip validation because "it's already checked"
+</Warning>
+
+## Next Steps
+
+- Learn about [Repositories](/core-concepts/repositories) for persistence
+- Understand [Services](/core-concepts/services) orchestration
+- Explore [DTOs](/core-concepts/dtos) for API boundaries
