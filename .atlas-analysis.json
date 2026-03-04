@@ -1,0 +1,129 @@
+{
+  "projectType": "framework",
+  "projectName": "Rust Ironclad",
+  "projectDescription": "Laravel-inspired web framework for Rust with Domain-Driven Design architecture",
+  "theme": "aspen",
+  "primaryColor": "#CE422B",
+  "lightColor": "#E86B50",
+  "darkColor": "#9C2E1F",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "installation",
+              "quickstart",
+              "project-structure"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/domain-driven-design",
+              "architecture/layers",
+              "architecture/dependency-injection"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "core-concepts/routing",
+              "core-concepts/controllers",
+              "core-concepts/services",
+              "core-concepts/entities-value-objects",
+              "core-concepts/repositories",
+              "core-concepts/dtos"
+            ]
+          },
+          {
+            "group": "Database",
+            "pages": [
+              "database/configuration",
+              "database/migrations",
+              "database/postgres",
+              "database/mongodb"
+            ]
+          },
+          {
+            "group": "Security",
+            "pages": [
+              "security/authentication",
+              "security/authorization",
+              "security/jwt",
+              "security/validation"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/middleware",
+              "advanced/error-handling",
+              "advanced/maintenance-mode",
+              "advanced/configuration",
+              "advanced/logging"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "CLI Reference",
+        "groups": [
+          {
+            "group": "Commands",
+            "pages": [
+              "cli/overview",
+              "cli/version",
+              "cli/database",
+              "cli/maintenance",
+              "cli/storage"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Modules",
+            "pages": [
+              "api/application",
+              "api/domain",
+              "api/infrastructure",
+              "api/interfaces",
+              "api/bootstrap"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Domain-Driven Design (DDD) architecture with clean separation of concerns",
+    "Repository pattern with async trait-based abstractions",
+    "Type-safe Value Objects with smart constructors",
+    "JWT authentication with bcrypt password hashing",
+    "Laravel-style CLI commands for maintenance, database, and storage",
+    "Actix-web powered with high-performance async runtime",
+    "PostgreSQL and MongoDB support with connection pooling",
+    "Built-in middleware for CORS, rate limiting, and maintenance mode"
+  ],
+  "publicApiSurface": [
+    "AuthController::register",
+    "AuthController::login",
+    "UserController::get_profile",
+    "UserController::get_all_users",
+    "TestItemController::create",
+    "TestItemController::get_all",
+    "HealthController::health_check",
+    "CLI: ironclad version",
+    "CLI: ironclad db-check",
+    "CLI: ironclad down",
+    "CLI: ironclad up",
+    "CLI: ironclad storage"
+  ]
+}
